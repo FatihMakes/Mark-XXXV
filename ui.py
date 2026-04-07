@@ -2,7 +2,7 @@ import os, json, time, math, random, threading
 import tkinter as tk
 from collections import deque
 from PIL import Image, ImageTk, ImageDraw
-import sys
+import sys, ctypes
 from pathlib import Path
 
 
@@ -48,6 +48,8 @@ class JarvisUI:
 
         self.W = W
         self.H = H
+
+        self._apply_dark_theme()
 
         self.FACE_SZ = min(int(H * 0.54), 400)
         self.FCX     = W // 2
@@ -124,6 +126,31 @@ class JarvisUI:
 
         self._animate()
         self.root.protocol("WM_DELETE_WINDOW", lambda: os._exit(0))
+
+
+    def _apply_dark_theme(self):
+        if not hasattr(ctypes, "windll"):
+            return
+
+        self.root.withdraw()
+        self.root.update_idletasks()
+
+        HWND = ctypes.windll.user32.GetParent(self.root.winfo_id())
+        VALUE = ctypes.c_int(1)
+        DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+
+        S_OK = 0x0
+        E_INVALIDARG = 0x80070057
+      
+        _apply_dark_theme = lambda: ctypes.windll.dwmapi.DwmSetWindowAttribute(HWND, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(VALUE), ctypes.sizeof(ctypes.c_int))
+        _apply_dark_theme_result = _apply_dark_theme()
+
+        if _apply_dark_theme_result == E_INVALIDARG:
+            DWMWA_USE_IMMERSIVE_DARK_MODE = 19
+            _apply_dark_theme_result = _apply_dark_theme()
+
+        self.root.deiconify()
+    
 
     # ── Mute butonu ───────────────────────────────────────────────────────────
 

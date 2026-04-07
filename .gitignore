@@ -1,0 +1,16 @@
+**/__pycache__/
+**/*.py[cod]
+
+venv/
+env/
+.venv/
+.env/
+
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+config/*.json
+.python-version
+.env
