@@ -24,6 +24,8 @@ import platform
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from memory.config_manager import require_gemini_key
+
 
 def get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -32,12 +34,10 @@ def get_base_dir() -> Path:
 
 
 BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    return require_gemini_key()
 
 
 def _parse_date(raw: str) -> str:

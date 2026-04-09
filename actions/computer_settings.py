@@ -14,6 +14,8 @@ import sys
 import platform
 from pathlib import Path
 
+from memory.config_manager import require_gemini_key
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
@@ -28,20 +30,11 @@ try:
 except ImportError:
     _PYPERCLIP = False
 
-_OS = platform.system() 
+_OS = platform.system()
 
-def get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
 
-BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
-
-import json
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    return require_gemini_key()
 
 
 def volume_up():

@@ -53,7 +53,7 @@ def load_memory() -> dict:
                 return data
             return _empty_memory()
         except Exception as e:
-            print(f"[Memory] ⚠️ Load error: {e}")
+            print(f"[Memory] Load error: {e}")
             return _empty_memory()
 
 
@@ -110,7 +110,7 @@ def update_memory(memory_update: dict) -> dict:
     memory = load_memory()
     if _recursive_update(memory, memory_update):
         save_memory(memory)
-        print(f"[Memory] 💾 Saved: {list(memory_update.keys())}")
+        print(f"[Memory] Saved: {list(memory_update.keys())}")
     return memory
 
 
@@ -139,7 +139,7 @@ def should_extract_memory(user_text: str, jarvis_text: str, api_key: str) -> boo
         )
         return "YES" in check.text.upper()
     except Exception as e:
-        print(f"[Memory] ⚠️ Stage1 check failed: {e}")
+        print(f"[Memory] Stage1 check failed: {e}")
         return False
 
 
@@ -195,7 +195,7 @@ def extract_memory(user_text: str, jarvis_text: str, api_key: str) -> dict:
         return {}
     except Exception as e:
         if "429" not in str(e):
-            print(f"[Memory] ⚠️ Extract failed: {e}")
+            print(f"[Memory] Extract failed: {e}")
         return {}
 
 

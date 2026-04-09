@@ -1,18 +1,12 @@
 import asyncio
 import base64
 import io
-import json
 import re
-import os
-import sys
-import time
 import threading
 import cv2
 import mss
 import mss.tools
 import sounddevice as sd
-import numpy as np
-from pathlib import Path
 
 try:
     import PIL.Image
@@ -23,13 +17,7 @@ except ImportError:
 from google import genai
 from google.genai import types
 
-def get_base_dir():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+from memory.config_manager import get_runtime_value, require_gemini_key, set_runtime_value
 
 LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 CHANNELS            = 1
@@ -52,25 +40,16 @@ SYSTEM_PROMPT = (
 
 
 def _get_api_key() -> str:
-    try:
-        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-            keys = json.load(f)
-        key = keys.get("gemini_api_key", "")
-        if not key:
-            raise ValueError("gemini_api_key not found")
-        return key
-    except Exception as e:
-        raise RuntimeError(f"Could not load API key: {e}")
+    return require_gemini_key()
 
 
 def _get_camera_index() -> int:
-    try:
-        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        if "camera_index" in cfg:
-            return int(cfg["camera_index"])
-    except Exception:
-        pass
+    stored_index = get_runtime_value("camera_index")
+    if stored_index is not None:
+        try:
+            return int(stored_index)
+        except (TypeError, ValueError):
+            pass
 
     print("[Camera] 🔍 No camera index in config. Auto-detecting...")
     best_index = 0
@@ -86,20 +65,14 @@ def _get_camera_index() -> int:
         cap.release()
         if ret and frame is not None and frame.mean() > 5:
             best_index = idx
-            print(f"[Camera] ✅ Camera found at index {idx} — saving to config.")
+            print(f"[Camera] ✅ Camera found at index {idx} — saving to runtime state.")
             break
         else:
             print(f"[Camera] ⚠️  Index {idx}: no valid frame.")
 
     try:
-        cfg = {}
-        if API_CONFIG_PATH.exists():
-            with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-        cfg["camera_index"] = best_index
-        with open(API_CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=4)
-        print(f"[Camera] 💾 Camera index {best_index} saved to config.")
+        set_runtime_value("camera_index", best_index)
+        print(f"[Camera] 💾 Camera index {best_index} saved to runtime state.")
     except Exception as e:
         print(f"[Camera] ⚠️  Could not save camera index: {e}")
 

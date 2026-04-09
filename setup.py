@@ -1,11 +1,16 @@
-import subprocess
 import sys
 
-print("Installing requirements...")
-subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
+from core.bootstrap_check import format_report, run_checks
 
-print("Installing Playwright browsers...")
-subprocess.run([sys.executable, "-m", "playwright", "install"], check=True)
 
-print("\n✅ Setup complete! Run 'python main.py' to start MARK XXV.")
+def main() -> int:
+    print("Running MARK-XXXV bootstrap validation...")
+    report = run_checks()
+    print(format_report(report))
+    if not report["ok"]:
+        print("\nInstall dependencies with 'pip install -r requirements.txt' and run 'playwright install'.")
+    return 0 if report["ok"] else 1
 
+
+if __name__ == "__main__":
+    raise SystemExit(main())

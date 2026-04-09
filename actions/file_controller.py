@@ -4,7 +4,20 @@
 import shutil
 from pathlib import Path
 from datetime import datetime
-import send2trash
+
+try:
+    import send2trash
+except ImportError:
+    send2trash = None
+
+
+PROTECTED_DELETE_PATHS = {
+    Path.home().resolve(),
+    (Path.home() / "Desktop").resolve(),
+    (Path.home() / "Downloads").resolve(),
+    (Path.home() / "Documents").resolve(),
+}
+
 
 def _get_desktop() -> Path:
     """Returns desktop path — works on Windows, Mac, Linux."""
@@ -101,15 +114,18 @@ def delete_file(path: str, confirm: bool = True) -> str:
     Moves to Recycle Bin on Windows if possible, otherwise permanent delete.
     """
     try:
-        target = Path(path).expanduser()
+        target = Path(path).expanduser().resolve()
         if not target.exists():
             return f"Not found: {path}"
+        if target in PROTECTED_DELETE_PATHS:
+            return f"Blocked for safety: refusing to delete protected path {target}"
 
         try:
-
+            if send2trash is None:
+                raise RuntimeError("send2trash unavailable")
             send2trash.send2trash(str(target))
             return f"Moved to Recycle Bin: {target.name}"
-        except ImportError:
+        except Exception:
             pass
 
         # Fallback: permanent delete

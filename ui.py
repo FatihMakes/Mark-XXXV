@@ -5,6 +5,8 @@ from PIL import Image, ImageTk, ImageDraw
 import sys
 from pathlib import Path
 
+from memory.config_manager import get_gemini_key, save_api_keys
+
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -566,7 +568,7 @@ class JarvisUI:
     # ── API key ───────────────────────────────────────────────────────────────
 
     def _api_keys_exist(self):
-        return API_FILE.exists()
+        return bool(get_gemini_key())
 
     def wait_for_api_key(self):
         while not self._api_key_ready:
@@ -604,9 +606,7 @@ class JarvisUI:
         gemini = self.gemini_entry.get().strip()
         if not gemini:
             return
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(API_FILE, "w", encoding="utf-8") as f:
-            json.dump({"gemini_api_key": gemini}, f, indent=4)
+        save_api_keys(gemini)
         self.setup_frame.destroy()
         self._api_key_ready = True
         self.set_state("LISTENING")

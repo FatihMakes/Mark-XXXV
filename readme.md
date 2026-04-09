@@ -46,6 +46,7 @@ git clone https://github.com/FatihMakes/Mark-XXXV.git
 cd Mark-XXXV
 pip install -r requirements.txt
 playwright install
+python main.py --check
 python main.py
 ```
 
