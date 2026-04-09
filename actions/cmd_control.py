@@ -1,22 +1,9 @@
 import subprocess
 import sys
-import json
 import re
 from pathlib import Path
 
-
-def get_base_dir():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
-
-
-def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+from memory.config_manager import require_gemini_key
 
 
 def _get_platform() -> str:
@@ -105,7 +92,7 @@ def _is_safe(command: str) -> tuple[bool, str]:
 def _ask_gemini(task: str) -> str:
     try:
         import google.generativeai as genai
-        genai.configure(api_key=_get_api_key())
+        genai.configure(api_key=require_gemini_key())
         model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
         prompt = (
@@ -194,6 +181,7 @@ def cmd_control(
     task    = (parameters or {}).get("task", "").strip()
     command = (parameters or {}).get("command", "").strip()
     visible = (parameters or {}).get("visible", True)
+    allow_model_fallback = bool((parameters or {}).get("allow_model_fallback", False))
 
     if not task and not command:
         return "Please describe what you want to do, sir."
@@ -202,7 +190,7 @@ def cmd_control(
         command = _find_hardcoded(task)
         if command:
             print(f"[CMD] ⚡ Hardcoded: {command[:80]}")
-        else:
+        elif allow_model_fallback:
             print(f"[CMD] 🤖 Gemini fallback for: {task}")
             command = _ask_gemini(task)
             print(f"[CMD] ✅ Generated: {command[:80]}")
@@ -210,6 +198,8 @@ def cmd_control(
                 return "I cannot generate a safe command for that request, sir."
             if command.startswith("ERROR:"):
                 return f"Could not generate command: {command}"
+        else:
+            return "I need an explicit safe command for that request, sir."
 
     safe, reason = _is_safe(command)
     if not safe:

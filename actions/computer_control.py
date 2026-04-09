@@ -17,7 +17,6 @@
 #   - Hotkey sequences
 #   - Find and click image/element on screen
 
-import json
 import sys
 import time
 import random
@@ -47,23 +46,20 @@ def get_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+from memory.config_manager import require_gemini_key
+from memory.memory_manager import load_memory
 
 
 def _load_user_profile() -> dict:
     """Load user profile from long_term.json for form filling."""
-    memory_path = BASE_DIR / "memory" / "long_term.json"
     try:
-        if memory_path.exists():
-            data = json.loads(memory_path.read_text(encoding="utf-8"))
-            identity = data.get("identity", {})
-            return {
-                "name":  identity.get("name",  {}).get("value", ""),
-                "age":   identity.get("age",   {}).get("value", ""),
-                "city":  identity.get("city",  {}).get("value", ""),
-                "email": identity.get("email", {}).get("value", ""),
-            }
+        identity = load_memory().get("identity", {})
+        return {
+            "name": identity.get("name", {}).get("value", ""),
+            "age": identity.get("age", {}).get("value", ""),
+            "city": identity.get("city", {}).get("value", ""),
+            "email": identity.get("email", {}).get("value", ""),
+        }
     except Exception:
         pass
     return {}
@@ -339,11 +335,7 @@ def _analyze_screen_for_element(description: str) -> tuple[int, int] | None:
         import google.generativeai as genai
         import io
 
-        cfg_path = API_CONFIG_PATH
-        with open(cfg_path, "r") as f:
-            api_key = json.load(f)["gemini_api_key"]
-
-        genai.configure(api_key=api_key)
+        genai.configure(api_key=require_gemini_key())
         model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
 

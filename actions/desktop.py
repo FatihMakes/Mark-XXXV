@@ -8,7 +8,6 @@
 
 import os
 import sys
-import json
 import shutil
 import subprocess
 import ctypes
@@ -17,137 +16,9 @@ import pyautogui
 from pathlib import Path
 from datetime import datetime
 
-
-def get_base_dir():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
-
-
-def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
-
-
 def _get_desktop() -> Path:
     return Path.home() / "Desktop"
 
-
-BLOCKED_KEYWORDS = [
-    "os.remove", "shutil.rmtree", "shutil.rm",
-    "subprocess.run", "subprocess.Popen", "subprocess.call",
-    "os.system", "exec(", "eval(",
-    "import os", "import subprocess",
-    "__import__", "open(",
-    "sys.exit", "quit()",
-]
-
-
-def _is_safe_code(code: str) -> tuple[bool, str]:
-    code_lower = code.lower()
-    for keyword in BLOCKED_KEYWORDS:
-        if keyword.lower() in code_lower:
-            return False, f"Blocked operation: '{keyword}'"
-    return True, "OK"
-
-
-def _ask_gemini_for_desktop_action(task: str) -> str:
-    """
-    Asks Gemini to generate safe Python/pyautogui code
-    to accomplish a desktop-related task.
-    """
-    import google.generativeai as genai
-
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel("gemini-2.5-flash")
-
-    desktop = str(_get_desktop())
-
-    prompt = f"""You are a Windows desktop automation expert.
-Generate safe Python code using ONLY these allowed modules:
-- pyautogui (mouse, keyboard, screenshots)
-- pathlib.Path (already imported as Path)
-- shutil (ONLY: copy2, copytree, move, disk_usage)
-- os.path (ONLY: exists, join, dirname, basename, splitext)
-- time (sleep only)
-- ctypes (Windows API calls only)
-- winreg (registry READ only)
-
-Desktop path: {desktop}
-
-Rules:
-- Output ONLY the Python code. No explanation, no markdown, no backticks.
-- NO file deletion (os.remove, shutil.rmtree, unlink, etc.)
-- NO subprocess calls
-- NO exec() or eval()
-- NO file write operations
-- If task cannot be done safely, output exactly: UNSAFE
-
-Task: {task}
-
-Python code:"""
-
-    try:
-        response = model.generate_content(prompt)
-        code = response.text.strip()
-        if code.startswith("```"):
-            lines = code.split("\n")
-            code = "\n".join(lines[1:-1]).strip()
-        return code
-    except Exception as e:
-        return f"ERROR: {e}"
-
-
-def _execute_generated_code(code: str) -> str:
-    """Safely executes Gemini-generated desktop automation code."""
-    safe, reason = _is_safe_code(code)
-    if not safe:
-        return f"⛔ Blocked for safety: {reason}"
-
-    allowed_globals = {
-        "pyautogui": pyautogui,
-        "Path": Path,
-        "shutil": shutil,
-        "ctypes": ctypes,
-        "time": __import__("time"),
-        "os": type("os", (), {
-            "path": os.path,
-            "listdir": os.listdir,
-            "getcwd": os.getcwd,
-            "environ": os.environ,
-        })(),
-        "__builtins__": {
-            "print": print,
-            "len": len,
-            "str": str,
-            "int": int,
-            "float": float,
-            "bool": bool,
-            "list": list,
-            "dict": dict,
-            "range": range,
-            "enumerate": enumerate,
-            "sorted": sorted,
-            "isinstance": isinstance,
-            "hasattr": hasattr,
-            "getattr": getattr,
-            "max": max,
-            "min": min,
-            "sum": sum,
-        }
-    }
-
-    output_lines = []
-    allowed_globals["print"] = lambda *args: output_lines.append(" ".join(str(a) for a in args))
-
-    try:
-        exec(code, allowed_globals)
-        return "\n".join(output_lines) if output_lines else "Task completed successfully."
-    except Exception as e:
-        return f"Execution error: {e}\n\nCode attempted:\n{code[:200]}"
 
 def set_wallpaper(image_path: str) -> str:
     """Sets desktop wallpaper from a local image path."""
@@ -381,31 +252,13 @@ def desktop_control(
             result = get_desktop_stats()
 
         elif action == "task" or task:
-            actual_task = task or parameters.get("description", "")
-            if not actual_task:
-                return "Please describe what you want to do on the desktop, sir."
-
-            print(f"[Desktop] 🤖 Asking Gemini: {actual_task}")
-            if player:
-                player.write_log("[Desktop] Generating action...")
-
-            code = _ask_gemini_for_desktop_action(actual_task)
-
-            if code == "UNSAFE":
-                result = "I cannot perform that desktop action safely, sir."
-            elif code.startswith("ERROR:"):
-                result = f"Could not generate action: {code}"
-            else:
-                print(f"[Desktop] ✅ Generated code:\n{code[:200]}")
-                result = _execute_generated_code(code)
+            result = (
+                "Desktop task automation now supports only deterministic actions. "
+                "Use desktop_control for wallpaper/list/clean/organize/stats or route the task through explicit tools, sir."
+            )
 
         else:
-            full_task = task or action
-            if full_task:
-                code   = _ask_gemini_for_desktop_action(full_task)
-                result = _execute_generated_code(code) if code not in ("UNSAFE",) else "Cannot do that safely."
-            else:
-                result = "No action or task specified."
+            result = "No deterministic desktop action specified."
 
     except Exception as e:
         result = f"Desktop control error: {e}"
