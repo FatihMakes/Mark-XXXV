@@ -1,0 +1,70 @@
+name: Build EXE
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Pre-cache ChromeDriver
+        run: |
+          python -c "from webdriver_manager.chrome import ChromeDriverManager; ChromeDriverManager().install()"
+
+      - name: Build EXE
+        run: >
+          pyinstaller
+          --onefile
+          --noconsole
+          --name JarvisMark35
+          --hidden-import selenium
+          --hidden-import selenium.webdriver.chrome.service
+          --hidden-import selenium.webdriver.chrome.options
+          --hidden-import selenium.webdriver.firefox.service
+          --hidden-import selenium.webdriver.firefox.options
+          --hidden-import selenium.webdriver.edge.service
+          --hidden-import selenium.webdriver.edge.options
+          --hidden-import selenium.webdriver.common.by
+          --hidden-import selenium.webdriver.common.keys
+          --hidden-import selenium.webdriver.common.action_chains
+          --hidden-import selenium.webdriver.support.ui
+          --hidden-import selenium.webdriver.support.expected_conditions
+          --hidden-import webdriver_manager.chrome
+          --hidden-import webdriver_manager.firefox
+          --hidden-import webdriver_manager.microsoft
+          --hidden-import comtypes.client
+          --hidden-import pycaw.pycaw
+          --hidden-import win10toast
+          --hidden-import pywinauto
+          --hidden-import pyautogui
+          --hidden-import cv2
+          --hidden-import numpy
+          --hidden-import mss
+          --hidden-import psutil
+          --hidden-import pyperclip
+          --hidden-import pygetwindow
+          --hidden-import send2trash
+          --hidden-import google.genai
+          --hidden-import google.generativeai
+          --collect-all selenium
+          --collect-all webdriver_manager
+          --collect-all google.genai
+          --collect-all google.generativeai
+          main.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JarvisMark35-exe
+          path: dist/JarvisMark35.exe
+          retention-days: 30
+          

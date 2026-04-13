@@ -1,11 +1,27 @@
-import asyncio
 import threading
-import concurrent.futures
 import platform
 import shutil
 import subprocess
 from pathlib import Path
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+
+from selenium import webdriver
+from selenium.webdriver.chrome.service  import Service as ChromeService
+from selenium.webdriver.chrome.options  import Options as ChromeOptions
+from selenium.webdriver.firefox.service import Service as FirefoxService
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
+from selenium.webdriver.edge.service    import Service as EdgeService
+from selenium.webdriver.edge.options    import Options as EdgeOptions
+from selenium.webdriver.common.by            import By
+from selenium.webdriver.common.keys          import Keys
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.support.ui           import WebDriverWait
+from selenium.webdriver.support              import expected_conditions as EC
+from webdriver_manager.chrome    import ChromeDriverManager
+from webdriver_manager.firefox   import GeckoDriverManager
+from webdriver_manager.microsoft import EdgeChromiumDriverManager
+
+
+# ── Default-browser detection (unchanged from original) ──────────────────────
 
 def _get_default_browser_id() -> str:
     """Returns raw default browser identifier string for current OS."""
@@ -41,6 +57,7 @@ def _get_default_browser_id() -> str:
         pass
 
     return ""
+
 
 _BROWSER_BINARIES = {
     "Windows": {
@@ -103,7 +120,7 @@ def _find_browser_executable(prog_id: str) -> tuple:
         return "firefox", None, None
 
     if "safari" in prog_id:
-        return "webkit", None, None
+        return "chromium", None, None   # WebKit not supported in Selenium; fall back to Chrome
 
     if "edge" in prog_id:
         return "chromium", None, "msedge"
@@ -138,352 +155,361 @@ def _find_browser_executable(prog_id: str) -> tuple:
     return "chromium", None, None
 
 
-class _BrowserThread:
+# ── Browser manager ───────────────────────────────────────────────────────────
+
+class _BrowserManager:
+    """
+    Manages normal and incognito WebDriver instances.
+    Replaces the original async _BrowserThread; Selenium is synchronous so no
+    asyncio event loop is needed.
+    """
 
     def __init__(self):
-        self._loop          = None
-        self._thread        = None
-        self._ready         = threading.Event()
-        self._playwright    = None
-        self._browser       = None
-        self._context       = None       # Normal context
-        self._incog_context = None       # Incognito/private context
-        self._page          = None       # Normal page
-        self._incog_page    = None       # Incognito page
-        self._engine_name   = "chromium" # Bilgi için sakla
-        self._exe_path      = None
-        self._channel       = None
+        self._lock         = threading.Lock()
+        self._driver       = None   # normal browser
+        self._incog_driver = None   # incognito / private browser
+        self._engine_name  = "chromium"
+        self._exe_path     = None
+        self._channel      = None
+        self._detected     = False
 
-    def start(self):
-        if self._thread and self._thread.is_alive():
+    # ── Detection ────────────────────────────────────────────────────────────
+
+    def _detect(self):
+        if self._detected:
             return
-        self._thread = threading.Thread(
-            target=self._run_loop, daemon=True, name="BrowserThread"
-        )
-        self._thread.start()
-        self._ready.wait(timeout=15)
-
-    def _run_loop(self):
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._init())
-        self._ready.set()
-        self._loop.run_forever()
-
-    async def _init(self):
-        self._playwright = await async_playwright().start()
-
-    def run(self, coro, timeout: int = 30):
-        if not self._loop:
-            raise RuntimeError("BrowserThread not started.")
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
-
-    # ── Tarayıcı başlatma ────────────────────────────────────────────────────
-
-    async def _launch_browser_if_needed(self):
-        """Ana tarayıcıyı başlat (henüz başlatılmadıysa)."""
-        if self._browser and self._browser.is_connected():
-            return
-
-        prog_id                              = _get_default_browser_id()
+        prog_id = _get_default_browser_id()
         self._engine_name, self._exe_path, self._channel = _find_browser_executable(prog_id)
-        engine = getattr(self._playwright, self._engine_name)
+        self._detected = True
 
-        launch_kwargs = {"headless": False}
-        if self._engine_name == "chromium":
-            launch_kwargs["args"] = ["--start-maximized"]
-        if self._exe_path:
-            launch_kwargs["executable_path"] = self._exe_path
-        elif self._channel:
-            launch_kwargs["channel"] = self._channel
+    # ── Liveness ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _alive(driver) -> bool:
+        if driver is None:
+            return False
         try:
-            self._browser = await engine.launch(**launch_kwargs)
-            print(
-                f"[Browser] ✅ Launched ({self._engine_name}"
-                f"{' / ' + self._channel if self._channel else ''}"
-                f"{' / ' + self._exe_path if self._exe_path else ''})"
-            )
-        except Exception as e:
-            print(f"[Browser] ⚠️ Launch failed ({e}), falling back to built-in Chromium")
-            self._browser = await self._playwright.chromium.launch(
-                headless=False,
-                args=["--start-maximized"]
-            )
+            _ = driver.title
+            return True
+        except Exception:
+            return False
 
-    async def _get_page(self, incognito: bool = False):
-        """
-        Sayfa döndürür.
-        incognito=True → özel/gizli sekme
-        incognito=False → normal sekme
-        """
-        await self._launch_browser_if_needed()
+    # ── Options builders ─────────────────────────────────────────────────────
 
+    def _chrome_options(self, incognito: bool = False) -> ChromeOptions:
+        opts = ChromeOptions()
+        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+        opts.add_experimental_option("useAutomationExtension", False)
+        opts.add_argument("--start-maximized")
+        opts.add_argument("--disable-blink-features=AutomationControlled")
+        opts.add_argument("--disable-infobars")
         if incognito:
-            return await self._get_incognito_page()
-        else:
-            return await self._get_normal_page()
+            opts.add_argument("--incognito")
+        if self._exe_path:
+            opts.binary_location = self._exe_path
+        return opts
 
-    async def _get_normal_page(self):
-        if self._page is None or self._page.is_closed():
-            if self._context is None:
-                self._context = await self._browser.new_context(
-                    viewport=None,
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    )
-                )
-            self._page = await self._context.new_page()
-        return self._page
+    @staticmethod
+    def _firefox_options(incognito: bool = False) -> FirefoxOptions:
+        opts = FirefoxOptions()
+        if incognito:
+            opts.set_preference("browser.privatebrowsing.autostart", True)
+        return opts
 
-    async def _get_incognito_page(self):
-        """
-        Gizli/özel sekme açar.
-        Chromium → new_context(no_viewport, storage_state temiz)
-        Firefox  → new_context(incognito)  [Playwright'ta firefox private]
-        """
-        # Mevcut gizli sayfa varsa kapat, yenisini aç
-        if self._incog_page and not self._incog_page.is_closed():
-            return self._incog_page
+    @staticmethod
+    def _edge_options(incognito: bool = False) -> EdgeOptions:
+        opts = EdgeOptions()
+        opts.add_argument("--start-maximized")
+        if incognito:
+            opts.add_argument("--inprivate")
+        return opts
 
-        # Önceki gizli context'i kapat
-        if self._incog_context:
-            try:
-                await self._incog_context.close()
-            except Exception:
-                pass
+    # ── Launch ───────────────────────────────────────────────────────────────
 
-        print("[Browser] 🕵️  Opening private/incognito context...")
-
-        if self._engine_name == "firefox":
-            # Firefox: firefox_user_prefs ile private browsing
-            self._incog_context = await self._browser.new_context(
-                viewport=None,
-                firefox_user_prefs={
-                    "browser.privatebrowsing.autostart": True
-                }
-            )
-        else:
-            # Chromium tabanlı: --incognito argümanı ile ayrı tarayıcı aç
-            # (Playwright'ta context-level incognito için browser.new_context yeterli
-            #  çünkü her context zaten izole storage'a sahip.
-            #  Gerçek incognito görünümü için ayrı browser instance gerekir.)
-            engine = getattr(self._playwright, self._engine_name)
-            launch_kwargs = {
-                "headless": False,
-                "args": ["--incognito", "--start-maximized"],
-            }
-            if self._exe_path:
-                launch_kwargs["executable_path"] = self._exe_path
-            elif self._channel:
-                launch_kwargs["channel"] = self._channel
-
-            try:
-                incog_browser = await engine.launch(**launch_kwargs)
-            except Exception:
-                incog_browser = await self._playwright.chromium.launch(
-                    headless=False,
-                    args=["--incognito", "--start-maximized"]
-                )
-
-            self._incog_context = await incog_browser.new_context(
-                viewport=None,
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                )
-            )
-
-        self._incog_page = await self._incog_context.new_page()
-        print("[Browser] ✅ Private/incognito page ready.")
-        return self._incog_page
-
-    # ── Eylemler ─────────────────────────────────────────────────────────────
-
-    async def _go_to(self, url: str, incognito: bool = False) -> str:
-        if not url.startswith("http"):
-            url = "https://" + url
-        page = await self._get_page(incognito=incognito)
+    def _launch(self, incognito: bool = False):
+        self._detect()
+        label = "incognito" if incognito else "normal"
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            if self._engine_name == "firefox":
+                driver = webdriver.Firefox(
+                    service=FirefoxService(GeckoDriverManager().install()),
+                    options=self._firefox_options(incognito=incognito),
+                )
+                print(f"[Browser] ✅ Firefox [{label}]")
+                return driver
+
+            if self._channel == "msedge":
+                driver = webdriver.Edge(
+                    service=EdgeService(EdgeChromiumDriverManager().install()),
+                    options=self._edge_options(incognito=incognito),
+                )
+                print(f"[Browser] ✅ Edge [{label}]")
+                return driver
+
+            # Chromium-based: Chrome, Brave, Vivaldi, Opera, or fallback
+            driver = webdriver.Chrome(
+                service=ChromeService(ChromeDriverManager().install()),
+                options=self._chrome_options(incognito=incognito),
+            )
+            bin_label = self._exe_path or self._channel or "Chrome"
+            print(f"[Browser] ✅ {bin_label} [{label}]")
+            return driver
+
+        except Exception as e:
+            print(f"[Browser] ⚠️ Launch failed ({e}), falling back to system Chrome")
+            opts = ChromeOptions()
+            opts.add_argument("--start-maximized")
+            if incognito:
+                opts.add_argument("--incognito")
+            return webdriver.Chrome(
+                service=ChromeService(ChromeDriverManager().install()),
+                options=opts,
+            )
+
+    # ── Driver accessor ───────────────────────────────────────────────────────
+
+    def _get_driver(self, incognito: bool = False):
+        with self._lock:
+            if incognito:
+                if not self._alive(self._incog_driver):
+                    self._incog_driver = self._launch(incognito=True)
+                return self._incog_driver
+            else:
+                if not self._alive(self._driver):
+                    self._driver = self._launch(incognito=False)
+                return self._driver
+
+    @staticmethod
+    def _wait(driver, timeout: int = 10) -> WebDriverWait:
+        return WebDriverWait(driver, timeout)
+
+    # ── Actions ───────────────────────────────────────────────────────────────
+
+    def _go_to(self, url: str, incognito: bool = False) -> str:
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        driver = self._get_driver(incognito=incognito)
+        try:
+            driver.get(url)
             mode = " [private]" if incognito else ""
-            return f"Opened{mode}: {page.url}"
-        except PlaywrightTimeout:
-            return f"Timeout loading: {url}"
+            return f"Opened{mode}: {driver.current_url}"
         except Exception as e:
             return f"Navigation error: {e}"
 
-    async def _search(self, query: str, engine: str = "google", incognito: bool = False) -> str:
+    def _search(self, query: str, engine: str = "google", incognito: bool = False) -> str:
         engines = {
             "google":     f"https://www.google.com/search?q={query.replace(' ', '+')}",
             "bing":       f"https://www.bing.com/search?q={query.replace(' ', '+')}",
             "duckduckgo": f"https://duckduckgo.com/?q={query.replace(' ', '+')}",
         }
         url = engines.get(engine.lower(), engines["google"])
-        return await self._go_to(url, incognito=incognito)
+        return self._go_to(url, incognito=incognito)
 
-    async def _click(self, selector=None, text=None, incognito: bool = False) -> str:
-        page = await self._get_page(incognito=incognito)
+    def _click(self, selector=None, text=None, incognito: bool = False) -> str:
+        driver = self._get_driver(incognito=incognito)
         try:
             if text:
-                await page.get_by_text(text, exact=False).first.click(timeout=8000)
+                element = self._wait(driver, 8).until(
+                    EC.element_to_be_clickable(
+                        (By.XPATH, f"//*[contains(text(), '{text}')]")
+                    )
+                )
+                element.click()
                 return f"Clicked: '{text}'"
             elif selector:
-                await page.click(selector, timeout=8000)
+                element = self._wait(driver, 8).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                )
+                element.click()
                 return f"Clicked: {selector}"
             return "No selector or text provided."
-        except PlaywrightTimeout:
-            return "Element not found or not clickable."
         except Exception as e:
             return f"Click error: {e}"
 
-    async def _type(self, selector=None, text: str = "", clear_first: bool = True, incognito: bool = False) -> str:
-        page = await self._get_page(incognito=incognito)
+    def _type(self, selector=None, text: str = "", clear_first: bool = True, incognito: bool = False) -> str:
+        driver = self._get_driver(incognito=incognito)
         try:
-            element = page.locator(selector).first if selector else page.locator(":focus")
+            if selector:
+                element = self._wait(driver).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                )
+            else:
+                element = driver.switch_to.active_element
             if clear_first:
-                await element.clear()
-            await element.type(text, delay=50)
+                element.clear()
+            element.send_keys(text)
             return "Text typed."
         except Exception as e:
             return f"Type error: {e}"
 
-    async def _scroll(self, direction: str = "down", amount: int = 500, incognito: bool = False) -> str:
-        page = await self._get_page(incognito=incognito)
+    def _scroll(self, direction: str = "down", amount: int = 500, incognito: bool = False) -> str:
+        driver = self._get_driver(incognito=incognito)
         try:
             y = amount if direction == "down" else -amount
-            await page.mouse.wheel(0, y)
+            driver.execute_script(f"window.scrollBy(0, {y});")
             return f"Scrolled {direction}."
         except Exception as e:
             return f"Scroll error: {e}"
 
-    async def _press(self, key: str, incognito: bool = False) -> str:
-        page = await self._get_page(incognito=incognito)
-        try:
-            await page.keyboard.press(key)
-            return f"Pressed: {key}"
-        except Exception as e:
-            return f"Key error: {e}"
-
-    async def _get_text(self, incognito: bool = False) -> str:
-        page = await self._get_page(incognito=incognito)
-        try:
-            text = await page.inner_text("body")
-            return text[:4000] if len(text) > 4000 else text
-        except Exception as e:
-            return f"Could not get page text: {e}"
-
-    async def _fill_form(self, fields: dict, incognito: bool = False) -> str:
-        page    = await self._get_page(incognito=incognito)
+    def _fill_form(self, fields: dict, incognito: bool = False) -> str:
+        driver  = self._get_driver(incognito=incognito)
         results = []
         for selector, value in fields.items():
             try:
-                el = page.locator(selector).first
-                await el.clear()
-                await el.type(str(value), delay=40)
+                element = self._wait(driver).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                )
+                element.clear()
+                element.send_keys(str(value))
                 results.append(f"✓ {selector}")
             except Exception as e:
                 results.append(f"✗ {selector}: {e}")
         return "Form filled: " + ", ".join(results)
 
-    async def _smart_click(self, description: str, incognito: bool = False) -> str:
-        page       = await self._get_page(incognito=incognito)
+    def _smart_click(self, description: str, incognito: bool = False) -> str:
+        driver     = self._get_driver(incognito=incognito)
         desc_lower = description.lower()
 
         role_hints = {
-            "button":    ["button", "buton", "btn"],
-            "link":      ["link", "bağlantı"],
-            "searchbox": ["search", "arama"],
-            "textbox":   ["input", "field", "alan"],
+            "button":  ["button", "buton", "btn"],
+            "link":    ["link", "bağlantı"],
+            "search":  ["search", "arama"],
+            "textbox": ["input", "field", "alan"],
         }
         for role, keywords in role_hints.items():
             if any(k in desc_lower for k in keywords):
                 try:
-                    await page.get_by_role(role).first.click(timeout=5000)
+                    element = self._wait(driver, 5).until(
+                        EC.element_to_be_clickable(
+                            (By.XPATH,
+                             f"//*[@role='{role}' or @aria-label='{description}']")
+                        )
+                    )
+                    element.click()
                     return f"Clicked ({role}): '{description}'"
                 except Exception:
                     pass
 
+        # Visible text
         try:
-            await page.get_by_text(description, exact=False).first.click(timeout=5000)
+            element = self._wait(driver, 5).until(
+                EC.element_to_be_clickable(
+                    (By.XPATH,
+                     f"//*[contains(text(), '{description}') "
+                     f"or normalize-space(text())='{description}']")
+                )
+            )
+            element.click()
             return f"Clicked (text): '{description}'"
         except Exception:
             pass
 
+        # Placeholder / aria-label / title
         try:
-            await page.get_by_placeholder(description, exact=False).first.click(timeout=5000)
+            element = self._wait(driver, 5).until(
+                EC.element_to_be_clickable(
+                    (By.XPATH,
+                     f"//*[@placeholder='{description}' "
+                     f"or @aria-label='{description}' "
+                     f"or @title='{description}']")
+                )
+            )
+            element.click()
             return f"Clicked (placeholder): '{description}'"
         except Exception:
             pass
 
         return f"Could not find: '{description}'"
 
-    async def _smart_type(self, description: str, text: str, incognito: bool = False) -> str:
-        page = await self._get_page(incognito=incognito)
-
-        for method, locator in [
-            ("placeholder", page.get_by_placeholder(description, exact=False)),
-            ("label",       page.get_by_label(description, exact=False)),
-            ("role",        page.get_by_role("textbox")),
-        ]:
+    def _smart_type(self, description: str, text: str, incognito: bool = False) -> str:
+        driver     = self._get_driver(incognito=incognito)
+        strategies = [
+            ("placeholder",
+             f"//input[@placeholder='{description}'] | //textarea[@placeholder='{description}']"),
+            ("label",
+             f"//input[@aria-label='{description}'] | //textarea[@aria-label='{description}']"),
+            ("name",
+             f"//input[@name='{description}'] | //textarea[@name='{description}']"),
+            ("role",
+             "//input[@type='text'] | //textarea | //input[not(@type)]"),
+        ]
+        for method, xpath in strategies:
             try:
-                el = locator.first
-                await el.clear()
-                await el.type(text, delay=50)
+                element = self._wait(driver, 5).until(
+                    EC.presence_of_element_located((By.XPATH, xpath))
+                )
+                element.clear()
+                element.send_keys(text)
                 return f"Typed into ({method}): '{description}'"
             except Exception:
                 continue
 
         return f"Could not find input: '{description}'"
 
-    async def _close_browser(self) -> str:
-        if self._incog_context:
-            try:
-                await self._incog_context.close()
-            except Exception:
-                pass
-            self._incog_context = None
-            self._incog_page    = None
+    def _get_text(self, incognito: bool = False) -> str:
+        driver = self._get_driver(incognito=incognito)
+        try:
+            text = driver.find_element(By.TAG_NAME, "body").text
+            return text[:4000] if len(text) > 4000 else text
+        except Exception as e:
+            return f"Could not get page text: {e}"
 
-        if self._browser:
-            await self._browser.close()
-            self._browser = None
-            self._context = None
-            self._page    = None
+    def _press(self, key: str, incognito: bool = False) -> str:
+        driver  = self._get_driver(incognito=incognito)
+        key_map = {
+            "enter":     Keys.ENTER,
+            "escape":    Keys.ESCAPE,
+            "esc":       Keys.ESCAPE,
+            "tab":       Keys.TAB,
+            "backspace": Keys.BACKSPACE,
+            "delete":    Keys.DELETE,
+            "space":     Keys.SPACE,
+            "up":        Keys.ARROW_UP,
+            "down":      Keys.ARROW_DOWN,
+            "left":      Keys.ARROW_LEFT,
+            "right":     Keys.ARROW_RIGHT,
+            "f5":        Keys.F5,
+            "home":      Keys.HOME,
+            "end":       Keys.END,
+        }
+        try:
+            mapped = key_map.get(key.lower(), key)
+            ActionChains(driver).send_keys(mapped).perform()
+            return f"Pressed: {key}"
+        except Exception as e:
+            return f"Key error: {e}"
 
-        if self._playwright:
-            await self._playwright.stop()
-            self._playwright = None
+    def _close_browser(self) -> str:
+        with self._lock:
+            if self._incog_driver:
+                try:
+                    self._incog_driver.quit()
+                except Exception:
+                    pass
+                self._incog_driver = None
+
+            if self._driver:
+                try:
+                    self._driver.quit()
+                except Exception:
+                    pass
+                self._driver = None
 
         return "Browser closed."
 
 
-# ── Singleton browser thread ─────────────────────────────────────────────────
+# ── Singleton ─────────────────────────────────────────────────────────────────
 
-_bt         = _BrowserThread()
-_bt_started = False
-_bt_lock    = threading.Lock()
+_bm = _BrowserManager()
 
 
-def _ensure_started():
-    global _bt_started
-    with _bt_lock:
-        if not _bt_started:
-            _bt.start()
-            _bt_started = True
-
-
-# ── Public API ───────────────────────────────────────────────────────────────
+# ── Public API (signature kept identical to original) ─────────────────────────
 
 def browser_control(
     parameters:     dict,
     response=None,
     player=None,
-    session_memory=None
+    session_memory=None,
 ) -> str:
     """
     Browser controller — auto-detects and uses system default browser.
@@ -493,92 +519,88 @@ def browser_control(
                       smart_click | smart_type | get_text | press | close
         url         : URL for go_to
         query       : search query
-        engine      : google | bing | duckduckgo (default: google)
-        selector    : CSS selector for click/type
+        engine      : google | bing | duckduckgo  (default: google)
+        selector    : CSS selector for click / type
         text        : text to click or type
-        description : element description for smart_click/smart_type
+        description : element description for smart_click / smart_type
         direction   : up | down for scroll
-        amount      : scroll amount in pixels (default: 500)
-        key         : key name for press (e.g. Enter, Escape, Tab)
+        amount      : scroll amount in pixels  (default: 500)
+        key         : key name for press  (e.g. Enter, Escape, Tab)
         fields      : {selector: value} dict for fill_form
-        clear_first : bool, clear input before typing (default: True)
-        incognito   : bool, open in private/incognito mode (default: False)
+        clear_first : bool — clear input before typing  (default: True)
+        incognito   : bool — open in private/incognito mode  (default: False)
     """
-    _ensure_started()
-
-    action   = (parameters or {}).get("action", "").lower().strip()
+    action    = (parameters or {}).get("action", "").lower().strip()
     incognito = bool(parameters.get("incognito", False))
-    result   = "Unknown action."
+    result    = "Unknown action."
 
     try:
         if action == "go_to":
-            result = _bt.run(_bt._go_to(parameters.get("url", ""), incognito=incognito))
+            result = _bm._go_to(parameters.get("url", ""), incognito=incognito)
 
         elif action == "search":
-            result = _bt.run(_bt._search(
+            result = _bm._search(
                 parameters.get("query", ""),
                 parameters.get("engine", "google"),
-                incognito=incognito
-            ))
+                incognito=incognito,
+            )
 
         elif action == "click":
-            result = _bt.run(_bt._click(
+            result = _bm._click(
                 selector=parameters.get("selector"),
                 text=parameters.get("text"),
-                incognito=incognito
-            ))
+                incognito=incognito,
+            )
 
         elif action == "type":
-            result = _bt.run(_bt._type(
+            result = _bm._type(
                 selector=parameters.get("selector"),
                 text=parameters.get("text", ""),
                 clear_first=parameters.get("clear_first", True),
-                incognito=incognito
-            ))
+                incognito=incognito,
+            )
 
         elif action == "scroll":
-            result = _bt.run(_bt._scroll(
+            result = _bm._scroll(
                 direction=parameters.get("direction", "down"),
                 amount=parameters.get("amount", 500),
-                incognito=incognito
-            ))
+                incognito=incognito,
+            )
 
         elif action == "fill_form":
-            result = _bt.run(_bt._fill_form(
+            result = _bm._fill_form(
                 parameters.get("fields", {}),
-                incognito=incognito
-            ))
+                incognito=incognito,
+            )
 
         elif action == "smart_click":
-            result = _bt.run(_bt._smart_click(
+            result = _bm._smart_click(
                 parameters.get("description", ""),
-                incognito=incognito
-            ))
+                incognito=incognito,
+            )
 
         elif action == "smart_type":
-            result = _bt.run(_bt._smart_type(
+            result = _bm._smart_type(
                 parameters.get("description", ""),
                 parameters.get("text", ""),
-                incognito=incognito
-            ))
+                incognito=incognito,
+            )
 
         elif action == "get_text":
-            result = _bt.run(_bt._get_text(incognito=incognito))
+            result = _bm._get_text(incognito=incognito)
 
         elif action == "press":
-            result = _bt.run(_bt._press(
+            result = _bm._press(
                 parameters.get("key", "Enter"),
-                incognito=incognito
-            ))
+                incognito=incognito,
+            )
 
         elif action == "close":
-            result = _bt.run(_bt._close_browser())
+            result = _bm._close_browser()
 
         else:
             result = f"Unknown action: {action}"
 
-    except concurrent.futures.TimeoutError:
-        result = "Browser action timed out."
     except Exception as e:
         result = f"Browser error: {e}"
 
