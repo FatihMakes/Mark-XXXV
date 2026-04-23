@@ -427,52 +427,81 @@ def _groq_tools() -> list:
 # ── TTS ───────────────────────────────────────────────────────────────────────
 
 async def _tts_speak(text: str) -> tuple[np.ndarray, int]:
-    import edge_tts
-    import struct
-
-    communicate = edge_tts.Communicate(text, voice="en-US-GuyNeural", rate="+0%", volume="+0%")
-
-    mp3_buf = io.BytesIO()
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            mp3_buf.write(chunk["data"])
-
-    mp3_bytes = mp3_buf.getvalue()
-    if not mp3_bytes:
-        return np.array([], dtype=np.float32), 24000
-
     try:
-        import pydub
-        seg = pydub.AudioSegment.from_mp3(io.BytesIO(mp3_bytes))
-        samples = np.array(seg.get_array_of_samples(), dtype=np.int16)
-        if seg.channels == 2:
-            samples = samples.reshape(-1, 2)
-        return samples.astype(np.float32) / 32768.0, seg.frame_rate
-    except Exception:
-        pass
+        import edge_tts
 
-    try:
-        import subprocess, tempfile, os
+        communicate = edge_tts.Communicate(text, voice="en-US-GuyNeural", rate="+0%", volume="+0%")
+
+        wav_buf = io.BytesIO()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                wav_buf.write(chunk["data"])
+
+        mp3_bytes = wav_buf.getvalue()
+        if not mp3_bytes:
+            raise ValueError("empty audio")
+
+        import tempfile, os, subprocess
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             f.write(mp3_bytes)
             mp3_path = f.name
-        wav_path = mp3_path.replace(".mp3", ".wav")
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", mp3_path, "-ar", "24000", "-ac", "1",
-             "-f", "s16le", wav_path],
-            capture_output=True, timeout=10
-        )
-        with open(wav_path, "rb") as f:
-            raw = f.read()
-        os.unlink(mp3_path)
-        os.unlink(wav_path)
-        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-        return samples, 24000
-    except Exception:
-        pass
 
-    print("[TTS] ❌ No decoder available (pydub+ffmpeg required)")
-    return np.array([], dtype=np.float32), 24000
+        wav_path = mp3_path.replace(".mp3", ".wav")
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", mp3_path, "-ar", "22050", "-ac", "1",
+             "-f", "s16le", wav_path],
+            capture_output=True, timeout=15
+        )
+        os.unlink(mp3_path)
+
+        if result.returncode == 0:
+            with open(wav_path, "rb") as f:
+                raw = f.read()
+            os.unlink(wav_path)
+            samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            return samples, 22050
+
+        os.unlink(wav_path)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[TTS] edge-tts failed: {e}")
+
+    return _tts_pyttsx3_blocking(text), 22050
+
+
+def _tts_pyttsx3_blocking(text: str) -> np.ndarray:
+    import pyttsx3, tempfile, os
+
+    engine = pyttsx3.init()
+    engine.setProperty("rate", 175)
+    engine.setProperty("volume", 1.0)
+
+    voices = engine.getProperty("voices")
+    for v in voices:
+        if "en" in v.id.lower() or "english" in v.name.lower():
+            engine.setProperty("voice", v.id)
+            break
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        wav_path = f.name
+
+    engine.save_to_file(text, wav_path)
+    engine.runAndWait()
+    engine.stop()
+
+    try:
+        with wave.open(wav_path, "rb") as wf:
+            raw = wf.readframes(wf.getnframes())
+        os.unlink(wav_path)
+        return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    except Exception as e:
+        print(f"[TTS] pyttsx3 wav read failed: {e}")
+        try:
+            os.unlink(wav_path)
+        except Exception:
+            pass
+        return np.array([], dtype=np.float32)
 
 
 def _play_audio_samples(samples: np.ndarray, samplerate: int):
@@ -685,18 +714,41 @@ class JarvisLive:
 
     # ── Chat con Groq ─────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _clean_response(text: str) -> str:
+        import re
+        text = re.sub(r"<function=\w+\{.*?\}</function>", "", text, flags=re.DOTALL)
+        text = re.sub(r"<function=[^>]*>", "", text)
+        text = re.sub(r"\{[^}]*\}\s*$", "", text)
+        return text.strip()
+
     async def _chat(self, user_text: str) -> str:
+        import re
         from groq import Groq
         client = Groq(api_key=_get_api_key())
         tools  = _groq_tools()
 
-        self._conversation.append({"role": "user", "content": user_text})
+        last = self._conversation[-1] if self._conversation else None
+        if not (last and last.get("role") == "user" and last.get("content") == user_text):
+            self._conversation.append({"role": "user", "content": user_text})
 
         if len(self._conversation) > 40:
             self._conversation = self._conversation[-40:]
 
         system_prompt = self._build_system_prompt()
-        messages = [{"role": "system", "content": system_prompt}] + self._conversation
+
+        def _sanitize(msgs):
+            import re
+            clean = []
+            for m in msgs:
+                m = dict(m)
+                if isinstance(m.get("content"), str):
+                    m["content"] = re.sub(r"<function=\w+\{.*?\}</function>", "", m["content"], flags=re.DOTALL)
+                    m["content"] = re.sub(r"<function=[^>]*>", "", m["content"]).strip()
+                clean.append(m)
+            return clean
+
+        messages = [{"role": "system", "content": system_prompt}] + _sanitize(self._conversation)
 
         MAX_TOOL_ROUNDS = 5
         for _ in range(MAX_TOOL_ROUNDS):
@@ -713,12 +765,63 @@ class JarvisLive:
                     )
                 )
             except Exception as e:
-                err = str(e)
-                print(f"[JARVIS] ❌ Groq API error: {err}")
+                err_str = str(e)
+                print(f"[JARVIS] ❌ Groq API error: {err_str}")
+
+                import re
+                fg_match = re.search(r"'failed_generation':\s*'(<function=(\w+)\{(.*?))\s*(?:</function>)?'", err_str, re.DOTALL)
+                if not fg_match:
+                    fg_match = re.search(r'"failed_generation":\s*"(<function=(\w+)\{(.*?))(?:</function>)?"', err_str, re.DOTALL)
+
+                if fg_match:
+                    import uuid
+                    fn_name  = fg_match.group(2)
+                    raw_args = "{" + fg_match.group(3).rstrip("\\").rstrip()
+                    if not raw_args.endswith("}"):
+                        raw_args += "}"
+                    try:
+                        args = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        pairs = re.findall(r'"(\w+)"\s*:\s*"([^"]*)"', raw_args)
+                        args  = {k: v for k, v in pairs}
+
+                    print(f"[JARVIS] 🔧 Recovered tool call: {fn_name}({args})")
+                    tool_result = await self._execute_tool(fn_name, args)
+                    fake_id = str(uuid.uuid4())
+                    messages.append({
+                        "role": "assistant", "content": "",
+                        "tool_calls": [{"id": fake_id, "type": "function", "function": {"name": fn_name, "arguments": json.dumps(args)}}]
+                    })
+                    messages.append({"role": "tool", "tool_call_id": fake_id, "content": str(tool_result)})
+                    continue
+
                 self._conversation.append({"role": "assistant", "content": ""})
                 return "I encountered an API error, sir. Please try again."
 
             msg = response.choices[0].message
+
+            if not msg.tool_calls and msg.content:
+                import re, uuid
+                match = re.search(r"<function=(\w+)(\{.*?)(?:</function>|$)", msg.content, re.DOTALL)
+                if match:
+                    fn_name  = match.group(1)
+                    raw_args = match.group(2).strip()
+                    if not raw_args.endswith("}"):
+                        raw_args += "}"
+                    try:
+                        args = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        pairs = re.findall(r'"(\w+)"\s*:\s*"([^"]*)"', raw_args)
+                        args  = {k: v for k, v in pairs}
+                    tool_result = await self._execute_tool(fn_name, args)
+                    fake_id = str(uuid.uuid4())
+                    messages.append({
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{"id": fake_id, "type": "function", "function": {"name": fn_name, "arguments": json.dumps(args)}}]
+                    })
+                    messages.append({"role": "tool", "tool_call_id": fake_id, "content": str(tool_result)})
+                    continue
 
             if msg.tool_calls:
                 messages.append({
@@ -748,7 +851,6 @@ class JarvisLive:
                         try:
                             args = json.loads(fixed)
                         except json.JSONDecodeError:
-                            import re
                             pairs = re.findall(r'"(\w+)"\s*:\s*"([^"]*)"', fixed)
                             args = {k: v for k, v in pairs}
 
@@ -762,7 +864,7 @@ class JarvisLive:
 
                 continue
 
-            final_text = (msg.content or "").strip()
+            final_text = self._clean_response(msg.content or "")
             self._conversation.append({"role": "assistant", "content": final_text})
             return final_text
 
@@ -839,7 +941,6 @@ class JarvisLive:
             stream.close()
 
     async def _process_voice(self, frames: list):
-        """Transcribe audio y responde."""
         self.ui.set_state("THINKING")
         text = await asyncio.to_thread(_transcribe_audio, frames)
         if not text:
@@ -847,8 +948,20 @@ class JarvisLive:
             return
 
         print(f"[STT] 🗣️  {text}")
-        self.ui.write_log(f"You: {text}")
-        await self._respond(text)
+
+        import re
+        normalized = text.lower().strip()
+        if not re.match(r"^jarvis[,\.\s]", normalized) and not normalized.startswith("jarvis"):
+            self.ui.set_state("LISTENING")
+            return
+
+        clean = re.sub(r"^jarvis[,\.\s]+", "", text, flags=re.IGNORECASE).strip()
+        if not clean:
+            self.ui.set_state("LISTENING")
+            return
+
+        self.ui.write_log(f"You: {clean}")
+        await self._respond(clean)
 
     # ── Texto desde UI ────────────────────────────────────────────────────────
 
