@@ -178,11 +178,10 @@ def _get_api_key() -> str:
 
 
 def create_plan(goal: str, context: str = "") -> dict:
-    import google.generativeai as genai
+    from core.groq_client import get_model, groq_chat_response
 
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash-lite",
+    model = get_model(
+        model_name="llama-3.3-70b-versatile",
         system_instruction=PLANNER_PROMPT
     )
 
@@ -238,11 +237,10 @@ def _fallback_plan(goal: str) -> dict:
 
 
 def replan(goal: str, completed_steps: list, failed_step: dict, error: str) -> dict:
-    import google.generativeai as genai
+    from core.groq_client import get_model, groq_chat_response
 
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+    model = get_model(
+        model_name="llama-3.3-70b-versatile",
         system_instruction=PLANNER_PROMPT
     )
 

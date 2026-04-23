@@ -512,9 +512,8 @@ def _detect_action(description: str) -> dict:
     Herhangi bir dilde çalışır.
     Döner: {"action": str, "value": optional}
     """
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    from core.groq_client import get_model, groq_chat_response
+    model = get_model("llama-3.3-70b-versatile")
 
     available = ", ".join(sorted(ACTION_MAP.keys())) + ", volume_set, type_text, write_on_screen, reload_n, press_key"
 

@@ -6,8 +6,6 @@ import traceback
 from pathlib import Path
 
 import sounddevice as sd
-from google import genai
-from google.genai import types
 from ui import JarvisUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
@@ -481,7 +479,7 @@ class JarvisLive:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
-    def _build_config(self) -> types.LiveConnectConfig:
+    def _build_config(self) -> None:
         from datetime import datetime
 
         memory     = load_memory()
@@ -501,30 +499,16 @@ class JarvisLive:
             parts.append(mem_str)
         parts.append(sys_prompt)
 
-        return types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            output_audio_transcription={},
-            input_audio_transcription={},
-            system_instruction="\n".join(parts),
-            tools=[{"function_declarations": TOOL_DECLARATIONS}],
-            session_resumption=types.SessionResumptionConfig(),
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Charon"
-                    )
-                )
-            ),
-        )
+        return "\n".join(parts)
 
-    async def _execute_tool(self, fc) -> types.FunctionResponse:
+    async def _execute_tool(self, fc) -> dict:
         name = fc.name
         args = dict(fc.args or {})
 
         print(f"[JARVIS] 🔧 {name}  {args}")
         self.ui.set_state("THINKING")
 
-        # ── save_memory: sessiz, hızlı, Gemini'ye bildirim yok ───────────────
+        # ── save_memory: sessiz, hızlı, işlenmesi yok ──────────────────────────
         if name == "save_memory":
             category = args.get("category", "notes")
             key      = args.get("key", "")
@@ -534,20 +518,17 @@ class JarvisLive:
                 print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
-            return types.FunctionResponse(
-                id=fc.id, name=name,
-                response={"result": "ok", "silent": True}
-            )
+            return {
+                "id": fc.id,
+                "name": name,
+                "response": {"result": "ok", "silent": True}
+            }
 
-        loop   = asyncio.get_event_loop()
+        loop = asyncio.get_event_loop()
         result = "Done."
 
         try:
-            if name == "open_app":
-                r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
-                result = r or f"Opened {args.get('app_name')}."
-
-            elif name == "weather_report":
+            if name == "weather_report":
                 r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
                 result = r or "Weather delivered."
 
@@ -637,10 +618,11 @@ class JarvisLive:
         print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
 
         # ── Result: tek cümle söyle, dur ──────────────────────────────────────
-        return types.FunctionResponse(
-            id=fc.id, name=name,
-            response={"result": result}
-        )
+        return {
+            "id": fc.id,
+            "name": name,
+            "response": {"result": result}
+        }
 
     async def _send_realtime(self):
         while True:
@@ -763,43 +745,9 @@ class JarvisLive:
             stream.close()
 
     async def run(self):
-        client = genai.Client(
-            api_key=_get_api_key(),
-            http_options={"api_version": "v1beta"}
-        )
-
+        print("[JARVIS] ⚠️ Groq live audio mode is not supported in this migration.")
         while True:
-            try:
-                print("[JARVIS] 🔌 Connecting...")
-                self.ui.set_state("THINKING")
-                config = self._build_config()
-
-                async with (
-                    client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
-                    asyncio.TaskGroup() as tg,
-                ):
-                    self.session        = session
-                    self._loop          = asyncio.get_event_loop()
-                    self.audio_in_queue = asyncio.Queue()
-                    self.out_queue      = asyncio.Queue(maxsize=10)
-
-                    print("[JARVIS] ✅ Connected.")
-                    self.ui.set_state("LISTENING")
-                    self.ui.write_log("SYS: JARVIS online.")
-
-                    tg.create_task(self._send_realtime())
-                    tg.create_task(self._listen_audio())
-                    tg.create_task(self._receive_audio())
-                    tg.create_task(self._play_audio())
-
-            except Exception as e:
-                print(f"[JARVIS] ⚠️ {e}")
-                traceback.print_exc()
-
-            self.set_speaking(False)
-            self.ui.set_state("THINKING")
-            print("[JARVIS] 🔄 Reconnecting in 3s...")
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
 
 
 def main():

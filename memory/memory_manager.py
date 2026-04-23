@@ -120,9 +120,8 @@ def should_extract_memory(user_text: str, jarvis_text: str, api_key: str) -> boo
     Öncekinden daha geniş kriterler — favori şeyler, projeler, arkadaşlar da dahil.
     """
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash-lite")
+        from core.groq_client import get_model, groq_chat_response
+        model = get_model("llama-3.3-70b-versatile")
 
         # Her iki tarafı da gönder — Jarvis'in söyledikleri de bilgi içerebilir
         combined = f"User: {user_text[:300]}\nJarvis: {jarvis_text[:200]}"
@@ -148,9 +147,8 @@ def extract_memory(user_text: str, jarvis_text: str, api_key: str) -> dict:
     Stage 2: Detaylı çıkarım. Her iki tarafı da analiz eder.
     """
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash-lite")
+        from core.groq_client import get_model, groq_chat_response
+        model = get_model("llama-3.3-70b-versatile")
 
         combined = f"User: {user_text[:500]}\nJarvis: {jarvis_text[:300]}"
 

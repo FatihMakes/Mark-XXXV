@@ -1,6 +1,6 @@
 # actions/web_search.py
 # MARK XXV — Web Search
-# Primary: Gemini google_search (yeni google.genai SDK)
+# Primary: Groq chat completions for query understanding
 # Fallback: DuckDuckGo (ddgs)
 
 import json
@@ -21,22 +21,18 @@ def _get_api_key() -> str:
         return json.load(f)["gemini_api_key"]
 
 
-def _gemini_search(query: str) -> str:
-    from google import genai
-
-    client = genai.Client(api_key=_get_api_key())
-    response = client.models.generate_content(
-        model="gemini-2.5-flash-lite",
-        contents=query,
-        config={"tools": [{"google_search": {}}]}
+def _groq_search(query: str) -> str:
+    response = groq_chat_response(
+        prompt=(
+            f"Search the web for the following query and answer it concisely: {query}"
+        ),
+        temperature=0.4,
+        max_completion_tokens=512,
     )
-    text = ""
-    for part in response.candidates[0].content.parts:
-        if hasattr(part, "text") and part.text:
-            text += part.text
-    if not text.strip():
+    text = response.text.strip()
+    if not text:
         raise ValueError("Empty response")
-    return text.strip()
+    return text
 
 
 
@@ -70,9 +66,9 @@ def _format_ddg(query: str, results: list) -> str:
 def _compare(items: list, aspect: str) -> str:
     query = f"Compare {', '.join(items)} in terms of {aspect}. Give specific facts and data."
     try:
-        return _gemini_search(query)
+        return _groq_search(query)
     except Exception as e:
-        print(f"[WebSearch] ⚠️ Gemini compare failed: {e}")
+        print(f"[WebSearch] ⚠️ Groq compare failed: {e}")
         all_results = {}
         for item in items:
             try:
@@ -118,13 +114,13 @@ def web_search(
             print("[WebSearch] ✅ Compare done.")
             return result
 
-        print("[WebSearch] 🌐 Gemini search...")
+        print("[WebSearch] 🌐 Groq search...")
         try:
-            result = _gemini_search(query)
-            print("[WebSearch] ✅ Gemini OK.")
+            result = _groq_search(query)
+            print("[WebSearch] ✅ Groq OK.")
             return result
         except Exception as e:
-            print(f"[WebSearch] ⚠️ Gemini failed ({e}), trying DDG...")
+            print(f"[WebSearch] ⚠️ Groq failed ({e}), trying DDG...")
             results = _ddg_search(query)
             result  = _format_ddg(query, results)
             print(f"[WebSearch] ✅ DDG: {len(results)} results.")

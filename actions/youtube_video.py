@@ -253,11 +253,10 @@ def _get_transcript(video_id: str) -> str | None:
 
 
 def _summarize_with_gemini(transcript: str, video_url: str) -> str:
-    import google.generativeai as genai
+    from core.groq_client import get_model, groq_chat_response
 
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+    model = get_model(
+        model_name="llama-3.3-70b-versatile",
         system_instruction=(
             "You are JARVIS, Tony Stark's AI assistant. "
             "Summarize YouTube video transcripts clearly and concisely. "
