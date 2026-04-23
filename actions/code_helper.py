@@ -37,7 +37,7 @@ def _get_api_key() -> str:
 
 
 def _get_gemini(model: str = GEMINI_MODEL):
-    from core.groq_client import get_model, groq_chat_response
+    from core.llm_client import get_model, groq_chat_response
     return get_model(model)
 
 
@@ -454,7 +454,7 @@ def _screen_debug_action(description, file_path, player, speak=None) -> str:
             print(f"[Code] ⚠️ Could not read file: {err}")
 
     try:
-        from core.groq_client import groq_chat_response
+        from core.llm_client import groq_chat_response
 
         user_question = description or "What error or problem do you see on the screen? How can it be fixed?"
 

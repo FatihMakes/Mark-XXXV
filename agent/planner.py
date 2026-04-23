@@ -178,7 +178,7 @@ def _get_api_key() -> str:
 
 
 def create_plan(goal: str, context: str = "") -> dict:
-    from core.groq_client import get_model, groq_chat_response
+    from core.llm_client import get_model, groq_chat_response
 
     model = get_model(
         model_name="llama-3.3-70b-versatile",
@@ -237,7 +237,7 @@ def _fallback_plan(goal: str) -> dict:
 
 
 def replan(goal: str, completed_steps: list, failed_step: dict, error: str) -> dict:
-    from core.groq_client import get_model, groq_chat_response
+    from core.llm_client import get_model, groq_chat_response
 
     model = get_model(
         model_name="llama-3.3-70b-versatile",

@@ -6,7 +6,7 @@
 import json
 import sys
 from pathlib import Path
-from core.groq_client import groq_chat_response
+from core.llm_client import groq_chat_response
 
 
 def get_base_dir() -> Path:

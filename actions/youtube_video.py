@@ -253,7 +253,7 @@ def _get_transcript(video_id: str) -> str | None:
 
 
 def _summarize_with_gemini(transcript: str, video_url: str) -> str:
-    from core.groq_client import get_model, groq_chat_response
+    from core.llm_client import get_model, groq_chat_response
 
     model = get_model(
         model_name="llama-3.3-70b-versatile",

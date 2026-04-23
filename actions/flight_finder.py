@@ -71,7 +71,7 @@ def _parse_date(raw: str) -> str:
             return val.strftime("%Y-%m-%d")
 
     try:
-        from core.groq_client import get_model, groq_chat_response
+        from core.llm_client import get_model, groq_chat_response
         model = get_model("llama-3.3-70b-versatile")
         today_str = today.strftime("%Y-%m-%d")
         response = model.generate_content(
@@ -180,7 +180,7 @@ def _parse_flights_with_gemini(
     Sends raw page text to Gemini and extracts structured flight data.
     Returns list of flight dicts.
     """
-    from core.groq_client import get_model, groq_chat_response
+    from core.llm_client import get_model, groq_chat_response
 
     model = get_model(
         model_name="llama-3.3-70b-versatile",

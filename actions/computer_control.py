@@ -336,7 +336,7 @@ def _analyze_screen_for_element(description: str) -> tuple[int, int] | None:
     of a described element on screen. Returns (x, y) or None.
     """
     try:
-        from core.groq_client import groq_chat_response
+        from core.llm_client import groq_chat_response
 
         _ensure_pyautogui()
         w, h = pyautogui.size()

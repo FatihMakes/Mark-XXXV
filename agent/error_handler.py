@@ -78,7 +78,7 @@ def analyze_error(
             "user_message": str
         }
     """
-    from core.groq_client import get_model, groq_chat_response
+    from core.llm_client import get_model, groq_chat_response
 
     if attempt >= max_attempts:
         print(f"[ErrorHandler] ⚠️ Max attempts reached for step {step.get('step')} — forcing replan")
@@ -147,7 +147,7 @@ def generate_fix(step: dict, error: str, fix_suggestion: str) -> dict:
 
     Returns a modified step dict.
     """
-    from core.groq_client import get_model, groq_chat_response
+    from core.llm_client import get_model, groq_chat_response
 
     model = get_model(model_name="llama-3.3-70b-versatile")
 

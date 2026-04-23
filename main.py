@@ -35,7 +35,7 @@ from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.volume_mixer import volume_mixer
-from core.groq_client import _get_elevenlabs_key
+from core.llm_client import _get_elevenlabs_key
 
 
 def get_base_dir():
@@ -517,32 +517,37 @@ def _play_audio_samples(samples: np.ndarray, samplerate: int):
 
 # ── STT (Whisper via Groq) ────────────────────────────────────────────────────
 
+from faster_whisper import WhisperModel
+import os
+
+_whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+
 def _transcribe_audio(pcm_frames: list[np.ndarray]) -> str:
     """
-    Convierte lista de chunks PCM int16 a WAV y transcribe con Groq Whisper.
+    Convierte lista de chunks PCM int16 a WAV y transcribe con faster-whisper local.
     """
     try:
-        from core.groq_client import get_client
-        client = get_client()
-
         audio = np.concatenate(pcm_frames, axis=0).flatten()
-        buf   = io.BytesIO()
+
+        buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(CHANNELS)
-            wf.setsampwidth(2)  # int16 = 2 bytes
+            wf.setsampwidth(2)
             wf.setframerate(SEND_SAMPLE_RATE)
             wf.writeframes(audio.tobytes())
         buf.seek(0)
-        buf.name = "audio.wav"
 
-        result = client.audio.transcriptions.create(
-            model="whisper-large-v3",
-            file=buf,
-            response_format="text",
-            language="en",
-        )
-        text = result.strip() if isinstance(result, str) else (result.text or "").strip()
+        # faster-whisper necesita archivo en disco, no BytesIO
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            f.write(buf.read())
+            tmp_path = f.name
+
+        segments, _ = _whisper_model.transcribe(tmp_path, language="en")
+        text = "".join(s.text for s in segments).strip()
+
+        os.unlink(tmp_path)
         return text
+
     except Exception as e:
         print(f"[STT] ❌ Transcription failed: {e}")
         return ""

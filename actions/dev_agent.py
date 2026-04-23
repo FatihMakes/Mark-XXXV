@@ -25,7 +25,7 @@ def _get_api_key() -> str:
 
 
 def _get_model(model_name: str):
-    from core.groq_client import get_model, groq_chat_response
+    from core.llm_client import get_model, groq_chat_response
     return get_model(model_name)
 
 
