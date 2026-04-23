@@ -35,7 +35,7 @@ from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.volume_mixer import volume_mixer
-from core.llm_client import _get_elevenlabs_key
+
 
 
 def get_base_dir():
@@ -460,7 +460,7 @@ def _groq_tools() -> list:
 async def _tts_speak(text: str) -> tuple[np.ndarray, int]:
     import edge_tts, io, soundfile as sf
 
-    voice = "en-US-GuyNeural"  # voz masculina, similar a Daniel
+    voice = "es-AR-TomasNeural"  # español 
     communicate = edge_tts.Communicate(text, voice)
 
     mp3_buf = io.BytesIO()
@@ -738,10 +738,9 @@ class JarvisLive:
         return text.strip()
 
     async def _chat(self, user_text: str) -> str:
-        import re
-        from groq import Groq
-        client = Groq(api_key=_get_api_key())
-        tools  = _groq_tools()
+        import re, uuid
+        from core.llm_client import groq_chat_response  # ← único import de LLM
+        tools = _groq_tools()
 
         last = self._conversation[-1] if self._conversation else None
         if not (last and last.get("role") == "user" and last.get("content") == user_text):
@@ -753,7 +752,6 @@ class JarvisLive:
         system_prompt = self._build_system_prompt()
 
         def _sanitize(msgs):
-            import re
             clean = []
             for m in msgs:
                 m = dict(m)
@@ -769,54 +767,20 @@ class JarvisLive:
         for _ in range(MAX_TOOL_ROUNDS):
             try:
                 response = await asyncio.to_thread(
-                    lambda: client.chat.completions.create(
-                        model=GROQ_MODEL,
+                    lambda: groq_chat_response(
                         messages=messages,
                         tools=tools,
-                        tool_choice="auto",
-                        parallel_tool_calls=False,
-                        max_tokens=1024,
-                        temperature=0.7,
                     )
                 )
             except Exception as e:
-                err_str = str(e)
-                print(f"[JARVIS] ❌ Groq API error: {err_str}")
-
-                import re
-                fg_match = re.search(r"'failed_generation':\s*'(<function=(\w+)\{(.*?))\s*(?:</function>)?'", err_str, re.DOTALL)
-                if not fg_match:
-                    fg_match = re.search(r'"failed_generation":\s*"(<function=(\w+)\{(.*?))(?:</function>)?"', err_str, re.DOTALL)
-
-                if fg_match:
-                    import uuid
-                    fn_name  = fg_match.group(2)
-                    raw_args = "{" + fg_match.group(3).rstrip("\\").rstrip()
-                    if not raw_args.endswith("}"):
-                        raw_args += "}"
-                    try:
-                        args = json.loads(raw_args)
-                    except json.JSONDecodeError:
-                        pairs = re.findall(r'"(\w+)"\s*:\s*"([^"]*)"', raw_args)
-                        args  = {k: v for k, v in pairs}
-
-                    print(f"[JARVIS] 🔧 Recovered tool call: {fn_name}({args})")
-                    tool_result = await self._execute_tool(fn_name, args)
-                    fake_id = str(uuid.uuid4())
-                    messages.append({
-                        "role": "assistant", "content": "",
-                        "tool_calls": [{"id": fake_id, "type": "function", "function": {"name": fn_name, "arguments": json.dumps(args)}}]
-                    })
-                    messages.append({"role": "tool", "tool_call_id": fake_id, "content": str(tool_result)})
-                    continue
-
+                print(f"[JARVIS] ❌ LLM error: {e}")
                 self._conversation.append({"role": "assistant", "content": ""})
-                return "I encountered an API error, sir. Please try again."
+                return "I encountered an error, sir. Please try again."
 
             msg = response.choices[0].message
 
+        # qwen a veces mete tool calls en el texto en lugar de tool_calls struct
             if not msg.tool_calls and msg.content:
-                import re, uuid
                 match = re.search(r"<function=(\w+)(\{.*?)(?:</function>|$)", msg.content, re.DOTALL)
                 if match:
                     fn_name  = match.group(1)
@@ -828,11 +792,11 @@ class JarvisLive:
                     except json.JSONDecodeError:
                         pairs = re.findall(r'"(\w+)"\s*:\s*"([^"]*)"', raw_args)
                         args  = {k: v for k, v in pairs}
+
                     tool_result = await self._execute_tool(fn_name, args)
                     fake_id = str(uuid.uuid4())
                     messages.append({
-                        "role": "assistant",
-                        "content": "",
+                        "role": "assistant", "content": "",
                         "tool_calls": [{"id": fake_id, "type": "function", "function": {"name": fn_name, "arguments": json.dumps(args)}}]
                     })
                     messages.append({"role": "tool", "tool_call_id": fake_id, "content": str(tool_result)})
@@ -846,10 +810,7 @@ class JarvisLive:
                         {
                             "id":       tc.id,
                             "type":     "function",
-                            "function": {
-                                "name":      tc.function.name,
-                                "arguments": tc.function.arguments,
-                            }
+                            "function": {"name": tc.function.name, "arguments": tc.function.arguments}
                         }
                         for tc in msg.tool_calls
                     ]
@@ -870,13 +831,11 @@ class JarvisLive:
                             args = {k: v for k, v in pairs}
 
                     tool_result = await self._execute_tool(tc.function.name, args)
-
                     messages.append({
                         "role":         "tool",
                         "tool_call_id": tc.id,
                         "content":      str(tool_result),
                     })
-
                 continue
 
             final_text = self._clean_response(msg.content or "")

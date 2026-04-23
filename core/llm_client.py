@@ -1,12 +1,14 @@
-# core/groq_client.py  (renombrarlo a llm_client.py es opcional pero más limpio)
-
 import json
 from openai import OpenAI
 
 OLLAMA_BASE_URL = "http://localhost:11434/v1"
-DEFAULT_MODEL   = "qwen2.5:3b"
+DEFAULT_MODEL   = "qwen2.5:1.5b"
 
 _client = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+
+
+def get_model() -> str:
+    return DEFAULT_MODEL
 
 
 def groq_chat_response(
@@ -15,10 +17,6 @@ def groq_chat_response(
     model: str = DEFAULT_MODEL,
     **kwargs,
 ):
-    """
-    Drop-in para el groq_chat_response anterior.
-    Retorna el objeto de respuesta de openai — mismo shape que antes.
-    """
     params = dict(
         model=model,
         messages=messages,
@@ -27,6 +25,6 @@ def groq_chat_response(
     if tools:
         params["tools"] = tools
         params["tool_choice"] = "auto"
-        params["parallel_tool_calls"] = False   # mismo fix que con Groq
+        params["parallel_tool_calls"] = False
 
     return _client.chat.completions.create(**params)
