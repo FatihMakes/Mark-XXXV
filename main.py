@@ -18,7 +18,7 @@ from memory.memory_manager import (
 )
 
 from actions.flight_finder     import flight_finder
-from actions.open_app          import open_app
+from actions.open_app          import open_app, close_app
 from actions.weather_report    import weather_action
 from actions.send_message      import send_message
 from actions.reminder          import reminder
@@ -34,6 +34,7 @@ from actions.dev_agent         import dev_agent
 from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
+from actions.volume_mixer import volume_mixer
 
 
 def get_base_dir():
@@ -71,8 +72,9 @@ def _load_system_prompt() -> str:
     except Exception:
         return (
             "You are JARVIS, Tony Stark's AI assistant. "
-            "Be concise, direct, and always use the provided tools to complete tasks. "
-            "Never simulate or guess results — always call the appropriate tool."
+"Always respond in the same language the user speaks. "
+"Be concise, direct, and always use the provided tools to complete tasks. "
+"Never simulate or guess results — always call the appropriate tool."
         )
 
 
@@ -107,6 +109,34 @@ def _update_memory_async(user_text: str, jarvis_text: str) -> None:
 # Formato OpenAI/Groq: type="function" con función anidada
 def _groq_tools() -> list:
     raw_tools = [
+        {
+    "name": "volume_mixer",
+    "description": "Controls the audio volume of a specific application. Use when user says raise/lower/mute/set volume for a specific app like Discord, Spotify, Valorant, etc.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "app_name": {"type": "string", "description": "Application name"},
+            "action":   {"type": "string", "description": "set | up | down | mute | unmute"},
+            "level":    {"type": "number",  "description": "Volume 0-100 for action=set"}
+        },
+        "required": ["app_name", "action"]
+    }
+},
+        
+        {
+            "name": "close_app",
+            "description": "Closes a running application. Use when the user asks to close, quit, kill or exit any app.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "app_name": {
+                        "type": "string",
+                        "description": "Name of the application to close (e.g. 'Discord', 'Spotify')"
+                    }
+                },
+                "required": ["app_name"]
+            }
+        },
         {
             "name": "open_app",
             "description": (
@@ -427,47 +457,21 @@ def _groq_tools() -> list:
 # ── TTS ───────────────────────────────────────────────────────────────────────
 
 async def _tts_speak(text: str) -> tuple[np.ndarray, int]:
-    try:
-        import edge_tts
+    import httpx, os
 
-        communicate = edge_tts.Communicate(text, voice="en-US-GuyNeural", rate="+0%", volume="+0%")
+    api_key = os.environ.get("ELEVENLABS_API_KEY") or _get_elevenlabs_key()
+    voice_id = "onwK4e9ZLuTAKqWW03F9"  # voz "Daniel" - suena profesional/brit
 
-        wav_buf = io.BytesIO()
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                wav_buf.write(chunk["data"])
-
-        mp3_bytes = wav_buf.getvalue()
-        if not mp3_bytes:
-            raise ValueError("empty audio")
-
-        import tempfile, os, subprocess
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            f.write(mp3_bytes)
-            mp3_path = f.name
-
-        wav_path = mp3_path.replace(".mp3", ".wav")
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-i", mp3_path, "-ar", "22050", "-ac", "1",
-             "-f", "s16le", wav_path],
-            capture_output=True, timeout=15
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream",
+            headers={"xi-api-key": api_key, "Content-Type": "application/json"},
+            json={"text": text, "model_id": "eleven_turbo_v2", "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}},
+            timeout=15,
         )
-        os.unlink(mp3_path)
+        mp3_bytes = r.content
 
-        if result.returncode == 0:
-            with open(wav_path, "rb") as f:
-                raw = f.read()
-            os.unlink(wav_path)
-            samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-            return samples, 22050
-
-        os.unlink(wav_path)
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        print(f"[TTS] edge-tts failed: {e}")
-
-    return _tts_pyttsx3_blocking(text), 22050
+    
 
 
 def _tts_pyttsx3_blocking(text: str) -> np.ndarray:
@@ -633,6 +637,9 @@ class JarvisLive:
                     update_memory({category: {key: {"value": value}}})
                     print(f"[Memory] 💾 {category}/{key} = {value}")
                 return ""   # silencioso
+            
+            elif name == "volume_mixer":
+                result = await loop.run_in_executor(None, lambda: volume_mixer(parameters=args, player=self.ui))
 
             elif name == "weather_report":
                 result = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
@@ -662,6 +669,9 @@ class JarvisLive:
 
             elif name == "computer_settings":
                 result = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
+
+            elif name == "close_app":
+                result = await loop.run_in_executor(None, lambda: close_app(parameters=args, player=self.ui))
 
             elif name == "open_app":
                 result = await loop.run_in_executor(None, lambda: open_app(parameters=args, player=self.ui))

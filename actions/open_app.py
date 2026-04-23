@@ -206,3 +206,38 @@ def open_app(
     except Exception as e:
         print(f"[open_app] ❌ {e}")
         return f"Failed to open {app_name}, sir: {e}"
+
+def close_app(
+    parameters=None,
+    response=None,
+    player=None,
+    session_memory=None,
+) -> str:
+    app_name = (parameters or {}).get("app_name", "").strip()
+    if not app_name:
+        return "Please specify which application to close, sir."
+
+    if not _PSUTIL:
+        return "psutil is not installed, cannot close applications."
+
+    app_lower = app_name.lower().replace(" ", "").replace(".exe", "")
+    killed = []
+
+    try:
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                proc_name = proc.info["name"].lower().replace(" ", "").replace(".exe", "")
+                if app_lower in proc_name or proc_name in app_lower:
+                    proc.terminate()
+                    killed.append(proc.info["name"])
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception as e:
+        return f"Failed to close {app_name}, sir: {e}"
+
+    if player:
+        player.write_log(f"[close_app] {app_name}")
+
+    if killed:
+        return f"Closed {app_name}, sir."
+    return f"No running process found for {app_name}, sir."
