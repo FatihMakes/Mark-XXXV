@@ -35,6 +35,7 @@ from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.volume_mixer import volume_mixer
+from core.groq_client import _get_elevenlabs_key
 
 
 def get_base_dir():
@@ -457,20 +458,19 @@ def _groq_tools() -> list:
 # ── TTS ───────────────────────────────────────────────────────────────────────
 
 async def _tts_speak(text: str) -> tuple[np.ndarray, int]:
-    import httpx, os
+    import edge_tts, io, soundfile as sf
 
-    api_key = os.environ.get("ELEVENLABS_API_KEY") or _get_elevenlabs_key()
-    voice_id = "onwK4e9ZLuTAKqWW03F9"  # voz "Daniel" - suena profesional/brit
+    voice = "en-US-GuyNeural"  # voz masculina, similar a Daniel
+    communicate = edge_tts.Communicate(text, voice)
 
-    async with httpx.AsyncClient() as client:
-        r = await client.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream",
-            headers={"xi-api-key": api_key, "Content-Type": "application/json"},
-            json={"text": text, "model_id": "eleven_turbo_v2", "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}},
-            timeout=15,
-        )
-        mp3_bytes = r.content
+    mp3_buf = io.BytesIO()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            mp3_buf.write(chunk["data"])
 
+    mp3_buf.seek(0)
+    samples, sr = sf.read(mp3_buf, dtype="float32")
+    return samples, sr
     
 
 
