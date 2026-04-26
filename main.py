@@ -58,9 +58,12 @@ CHANNELS            = 1
 # VAD settings
 VAD_SILENCE_THRESHOLD  = 0.01 # RMS por debajo de esto = silencio
 VAD_SILENCE_DURATION   = 1.2    # segundos de silencio para cortar
-VAD_MIN_SPEECH_DURATION = 0.4   # mínimo de habla para procesar
-VAD_CHUNK_DURATION     = 0.05   # segundos por chunk de mic (50ms)
+VAD_MIN_SPEECH_DURATION = 0.3   # mínimo de habla para procesar
+VAD_CHUNK_DURATION     = 0.01   # segundos por chunk de mic (50ms)
 VAD_CHUNK_SIZE         = int(SEND_SAMPLE_RATE * VAD_CHUNK_DURATION)
+
+SILENCE_TENTATIVE  = 0.8   # "capaz terminó"
+SILENCE_DEFINITIVE = 2.0
 
 
 def _get_api_key() -> str:
@@ -88,25 +91,18 @@ _last_memory_input = ""
 
 def _update_memory_async(user_text: str, jarvis_text: str) -> None:
     global _last_memory_input
-
-    user_text   = (user_text   or "").strip()
-    jarvis_text = (jarvis_text or "").strip()
-
     if len(user_text) < 5 or user_text == _last_memory_input:
         return
     _last_memory_input = user_text
-
     try:
-        api_key = _get_api_key()
-        if not should_extract_memory(user_text, jarvis_text, api_key):
+        if not should_extract_memory(user_text, jarvis_text):
             return
-        data = extract_memory(user_text, jarvis_text, api_key)
+        data = extract_memory(user_text, jarvis_text)
         if data:
             update_memory(data)
             print(f"[Memory] ✅ {list(data.keys())}")
     except Exception as e:
-        if "429" not in str(e):
-            print(f"[Memory] ⚠️ {e}")
+        print(f"[Memory] ⚠️ {e}")
 
 
 # ── Tool declarations ─────────────────────────────────────────────────────────
@@ -661,6 +657,9 @@ class JarvisLive:
         self._in_conversation     = False
         self._conversation_timeout = 20  # segundos sin hablar resetea
         self._last_interaction    = 0.0
+        self._proactive_interval = 300  # revisar cada 5 minutos
+        self._last_proactive     = 0.0  # timestamp última intervención
+        self._proactive_cooldown = 600
 
         # Callback que usa la UI para enviar texto escrito
         self.ui.on_text_command = self._on_text_command
@@ -724,6 +723,85 @@ class JarvisLive:
 
     # ── Tool execution ────────────────────────────────────────────────────────
 
+    async def _proactive_check(self) -> None:
+        """
+    Evalúa si hay algo relevante que decirle al usuario sin que lo pida.
+    Usa Ollama para decidir si intervenir y qué decir.
+        """
+        from openai import OpenAI
+        import re
+
+        memory = load_memory()
+        mem_str = format_memory_for_prompt(memory)
+        if not mem_str:
+            return  # sin memoria no hay contexto para ser proactivo
+
+        now = datetime.now()
+        time_str = now.strftime("%A %d/%m/%Y — %H:%M")
+
+        prompt = (
+        f"eres un asistente personal que conoce bien al usuario.\n"
+        f"Hora actual: {time_str}\n\n"
+        f"{mem_str}\n\n"
+        f"¿Hay algo relevante que deberías mencionar al usuario AHORA, "
+        f"sin que te lo pida? Por ejemplo:\n"
+        f"- Es tarde y mañana tiene clases o algo importante\n"
+        f"- Lleva mucho tiempo sin hacer algo que dijo que quería hacer\n"
+        f"- Hay algo en su rutina que aplica a este momento del día\n"
+        f"- Tiene un objetivo que podría estar descuidando\n\n"
+        f"Si hay algo relevante, respondé con el mensaje exacto a decirle "
+        f"(máximo 2 oraciones, natural, no intrusivo).\n"
+        f"Si NO hay nada relevante, respondé exactamente: NADA\n\n"
+        f"Respuesta:"
+    )
+
+        try:
+            client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+            response = await asyncio.to_thread(
+                lambda: client.chat.completions.create(
+                    model="qwen2.5:3b",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7,
+                    max_tokens=120,
+                )
+            )
+            msg = response.choices[0].message.content.strip()
+
+            if not msg or "NADA" in msg.upper():
+                return
+
+        # limpiar si el modelo agrega comillas o prefijos
+            msg = re.sub(r'^["""\']+|["""\']+$', "", msg).strip()
+            if len(msg) < 5:
+                return
+
+            print(f"[Proactive] 💬 {msg}")
+            self._last_proactive = asyncio.get_event_loop().time()
+            self._in_conversation = True
+            self._last_interaction = self._last_proactive
+            await self._speak_async(msg)
+
+        except Exception as e:
+            print(f"[Proactive] ⚠️ {e}")
+
+
+    async def _proactive_loop(self) -> None:
+        """Thread de background que evalúa proactividad cada N minutos."""
+        await asyncio.sleep(60)  # esperar 1 min antes de la primera revisión
+        while True:
+            await asyncio.sleep(self._proactive_interval)
+            now = asyncio.get_event_loop().time()
+
+        # no interrumpir si está hablando o si fue reciente
+            with self._speaking_lock:
+                is_speaking = self._is_speaking
+            if is_speaking:
+                continue
+            if now - self._last_proactive < self._proactive_cooldown:
+                continue
+
+            await self._proactive_check()
+
     async def _execute_tool(self, name: str, args: dict) -> str:
         print(f"[JARVIS] 🔧 {name}  {args}")
         self.ui.set_state("THINKING")
@@ -765,9 +843,9 @@ class JarvisLive:
 
             elif name == "screen_process":
                 threading.Thread(
-                    target=screen_process,
-                    kwargs={"parameters": args, "response": None, "player": self.ui, "session_memory": None},
-                    daemon=True
+                target=_update_memory_async,
+                args=(user_text, reply),
+                daemon=True
                 ).start()
                 result = "Vision module activated."
 
@@ -993,6 +1071,9 @@ class JarvisLive:
         print("[JARVIS] 🎤 Mic started")
         stream.start()
 
+        silence_limit_tentative  = int(SILENCE_TENTATIVE  / VAD_CHUNK_DURATION)
+        silence_limit_definitive = int(SILENCE_DEFINITIVE / VAD_CHUNK_DURATION)
+
         try:
             while True:
                 chunk = await mic_queue.get()
@@ -1000,28 +1081,33 @@ class JarvisLive:
 
                 if rms > VAD_SILENCE_THRESHOLD:
                     if not speaking:
-                        speaking = True
-                        speech_chunks = 0
-                        audio_buffer = []
+                        speaking       = True
+                        speech_chunks  = 0
+                        audio_buffer   = []
                         self.ui.set_state("LISTENING")
                     audio_buffer.append(chunk)
-                    speech_chunks += 1
-                    silence_chunks = 0
+                    speech_chunks  += 1
+                    silence_chunks  = 0   # reset — volvió a hablar
+
                 elif speaking:
                     audio_buffer.append(chunk)
                     silence_chunks += 1
 
-                    if silence_chunks >= silence_limit:
+                    if silence_chunks >= silence_limit_definitive:
+                        # Silencio largo — definitivamente terminó
                         speaking = False
-                        if speech_chunks >= speech_min:
-                            # Hay habla suficiente — procesar
+                        if speech_chunks >= int(VAD_MIN_SPEECH_DURATION / VAD_CHUNK_DURATION):
                             frames = list(audio_buffer)
                             audio_buffer = []
-                            asyncio.ensure_future(
-                                self._process_voice(frames)
-                            )
+                            asyncio.ensure_future(self._process_voice(frames))
                         else:
                             audio_buffer = []
+
+                    elif silence_chunks == silence_limit_tentative:
+                        # Silencio corto — puede estar pensando
+                        # No procesamos todavía, solo mostramos estado
+                        self.ui.set_state("THINKING")
+
         finally:
             stream.stop()
             stream.close()
@@ -1071,6 +1157,14 @@ class JarvisLive:
 
     # ── Texto desde UI ────────────────────────────────────────────────────────
 
+        if not self._in_conversation:
+            now = asyncio.get_event_loop().time()
+            if now - self._last_proactive > self._proactive_cooldown:
+                await self._proactive_check()
+
+        self.ui.write_log(f"You: {clean}")
+        await self._respond(clean)
+
     async def _watch_text_queue(self):
         """Procesa comandos de texto escritos desde la UI."""
         while True:
@@ -1103,6 +1197,7 @@ class JarvisLive:
         await asyncio.gather(
             self._listen_and_process(),
             self._watch_text_queue(),
+            self._proactive_loop(),
         )
 
 
