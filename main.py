@@ -1041,7 +1041,6 @@ class JarvisLive:
             except Exception as e:
                 print(f"[JARVIS] ❌ LLM error: {e}")
                 err_str = str(e)
-                import uuid
                 fg_match = (
                     re.search(r"<function=(\w+)>\s*(\{.*?\})\s*</?function>", err_str, re.DOTALL) or
                     re.search(r"<function=(\w+)>\s*(\{.*?\})", err_str, re.DOTALL) or
@@ -1059,14 +1058,22 @@ class JarvisLive:
                     except json.JSONDecodeError:
                         pairs = re.findall(r'"(\w+)"\s*:\s*"([^"]*)"', raw_args)
                         args  = {k: v for k, v in pairs}
-                    print(f"[JARVIS] 🔧 Recovered: {fn_name}({args})")
-                    tool_result = await self._execute_tool(fn_name, args)
-                    fake_id = str(uuid.uuid4())
-                    messages.append({"role": "assistant", "content": "", "tool_calls": [{"id": fake_id, "type": "function", "function": {"name": fn_name, "arguments": json.dumps(args)}}]})
-                    messages.append({"role": "tool", "tool_call_id": fake_id, "content": str(tool_result)})
-                    continue
-                self._conversation.append({"role": "assistant", "content": ""})
-                return "I encountered an error, sir. Please try again."
+                        print(f"[JARVIS] 🔧 Recovered: {fn_name}({args})")
+                        tool_result = await self._execute_tool(fn_name, args)
+                        fake_id = str(uuid.uuid4())
+                        messages.append({
+                            "role": "assistant", "content": "",
+                            "tool_calls": [{"id": fake_id, "type": "function", "function": {"name": fn_name, "arguments": json.dumps(args)}}]
+                        })
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": fake_id,
+                            "content": str(tool_result)
+                        })
+                        continue  # ← vuelve al loop, LLM genera respuesta final
+    
+                    self._conversation.append({"role": "assistant", "content": ""})
+                    return "I encountered an error, sir. Please try again."
 
             msg = response.choices[0].message
 

@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 from core.llm_client import groq_chat_response
+import ddgs
 
 
 def get_base_dir() -> Path:
@@ -24,13 +25,13 @@ API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 def _groq_search(query: str) -> str:
     response = groq_chat_response(
-        prompt=(
-            f"Search the web for the following query and answer it concisely: {query}"
-        ),
+        messages=[{
+            "role": "user",
+            "content": f"Search the web for the following query and provide a concise, accurate answer: {query}"
+        }],
         temperature=0.4,
-        max_completion_tokens=512,
     )
-    text = response.text.strip()
+    text = response.choices[0].message.content.strip()
     if not text:
         raise ValueError("Empty response")
     return text
