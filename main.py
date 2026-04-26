@@ -35,6 +35,9 @@ from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.volume_mixer import volume_mixer
+from actions.screenshot import screenshot
+from actions.timer import timer
+from actions.writer import writer
 
 
 
@@ -53,7 +56,7 @@ SEND_SAMPLE_RATE    = 16000   # mic input
 CHANNELS            = 1
 
 # VAD settings
-VAD_SILENCE_THRESHOLD  = 0.01   # RMS por debajo de esto = silencio
+VAD_SILENCE_THRESHOLD  = 0.01 # RMS por debajo de esto = silencio
 VAD_SILENCE_DURATION   = 1.2    # segundos de silencio para cortar
 VAD_MIN_SPEECH_DURATION = 0.4   # mínimo de habla para procesar
 VAD_CHUNK_DURATION     = 0.05   # segundos por chunk de mic (50ms)
@@ -110,6 +113,97 @@ def _update_memory_async(user_text: str, jarvis_text: str) -> None:
 # Formato OpenAI/Groq: type="function" con función anidada
 def _groq_tools() -> list:
     raw_tools = [
+        {
+    "name": "writer",
+    "description": (
+        "Escribe texto directamente donde está el cursor del usuario. "
+        "Útil para traducir y escribir el resultado, redactar texto en otro idioma, "
+        "o simplemente escribir algo que el usuario dicta. "
+        "IMPORTANTE: Si el usuario pide traducir, traducí el texto vos mismo y pasalo "
+        "en el campo 'text' ya traducido — no pases el texto original. "
+        "Ejemplos: 'traducí esto al inglés y escribilo', 'escribí hola mundo en francés', "
+        "'dictame esto en el chat'."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "text": {
+                "type": "STRING",
+                "description": "Texto final a escribir (ya traducido si corresponde)."
+            },
+            "target_lang": {
+                "type": "STRING",
+                "description": "Idioma al que se tradujo, para el log. Ej: 'inglés', 'francés'."
+            },
+            "delay": {
+                "type": "NUMBER",
+                "description": "Segundos de espera antes de escribir para que el usuario posicione el cursor. Default: 1.0"
+            },
+        },
+        "required": ["text"]
+    }
+},
+        {
+    "name": "timer",
+    "description": (
+        "Crea timers y alarmas. "
+        "Para timers: 'poneme un timer de 10 minutos', 'avisame en 30 segundos'. "
+        "Para alarmas: 'despertame a las 8', 'alarma a las 14:30'. "
+        "También puede cancelar timers activos o listarlos."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": "set | alarm | cancel | list (default: set)"
+            },
+            "label": {
+                "type": "STRING",
+                "description": "Nombre del timer o alarma. Ej: 'pasta', 'reunión', 'despertar'."
+            },
+            "duration": {
+                "type": "STRING",
+                "description": "Duración para timers. Ej: '5 minutos', '30 segundos', '1 hora 30 minutos'."
+            },
+            "alarm_at": {
+                "type": "STRING",
+                "description": "Hora para alarmas. Ej: '14:30', '8 de la mañana', '9:00pm'."
+            },
+            "timer_id": {
+                "type": "STRING",
+                "description": "Nombre del timer a cancelar (para action=cancel)."
+            },
+        },
+        "required": []
+    }
+},
+        {
+    "name": "screenshot",
+    "description": (
+        "Toma una captura de pantalla y la guarda en disco. "
+        "Usar cuando el usuario pide 'captura', 'screenshot', 'screenshoot', 'foto de pantalla', 'capturá la pantalla'. "
+        "Permite elegir dónde guardarla y con qué nombre."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "destination": {
+                "type": "STRING",
+                "description": "Carpeta donde guardar la captura. Ej: 'C:/Users/usuario/Desktop'. Si no se especifica usa Imágenes/Screenshots."
+            },
+            "filename": {
+                "type": "STRING",
+                "description": "Nombre del archivo sin extensión. Si no se especifica se usa la fecha y hora."
+            },
+            "monitor": {
+                "type": "INTEGER",
+                "description": "Número de monitor (1 = principal, 2 = secundario). Default: 1."
+            },
+        },
+        "required": []
+    }
+},
         {
     "name": "volume_mixer",
     "description": "Controls the audio volume of a specific application. Use when user says raise/lower/mute/set volume for a specific app like Discord, Spotify, Valorant, etc.",
@@ -520,7 +614,7 @@ def _play_audio_samples(samples: np.ndarray, samplerate: int):
 from faster_whisper import WhisperModel
 import os
 
-_whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+_whisper_model = WhisperModel("small", device="cuda", compute_type="int8")
 
 def _transcribe_audio(pcm_frames: list[np.ndarray]) -> str:
     """
@@ -542,7 +636,7 @@ def _transcribe_audio(pcm_frames: list[np.ndarray]) -> str:
             f.write(buf.read())
             tmp_path = f.name
 
-        segments, _ = _whisper_model.transcribe(tmp_path, language="en")
+        segments, _ = _whisper_model.transcribe(tmp_path, language="es")
         text = "".join(s.text for s in segments).strip()
 
         os.unlink(tmp_path)
@@ -564,6 +658,9 @@ class JarvisLive:
         self._speaking_lock = threading.Lock()
         self._text_queue    = asyncio.Queue()   # texto desde UI
         self._conversation  = []               # historial de mensajes
+        self._in_conversation     = False
+        self._conversation_timeout = 20  # segundos sin hablar resetea
+        self._last_interaction    = 0.0
 
         # Callback que usa la UI para enviar texto escrito
         self.ui.on_text_command = self._on_text_command
@@ -663,6 +760,8 @@ class JarvisLive:
 
             elif name == "youtube_video":
                 result = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
+            elif name == "screenshot":
+                result = await loop.run_in_executor(None, lambda: screenshot(parameters=args, player=self.ui))
 
             elif name == "screen_process":
                 threading.Thread(
@@ -715,6 +814,18 @@ class JarvisLive:
             elif name == "flight_finder":
                 result = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
 
+            elif name == "timer":
+                result = await loop.run_in_executor(
+                None,
+                lambda: timer(parameters=args, player=self.ui, speak=self.speak)
+                )
+            elif name == "writer":
+                result = await loop.run_in_executor(
+                None,
+                lambda: writer(parameters=args, player=self.ui, speak=self.speak)
+    )
+    
+
             else:
                 result = f"Unknown tool: {name}"
 
@@ -746,8 +857,8 @@ class JarvisLive:
         if not (last and last.get("role") == "user" and last.get("content") == user_text):
             self._conversation.append({"role": "user", "content": user_text})
 
-        if len(self._conversation) > 40:
-            self._conversation = self._conversation[-40:]
+        if len(self._conversation) > 10:
+            self._conversation = self._conversation[-10:]
 
         system_prompt = self._build_system_prompt()
 
@@ -871,12 +982,13 @@ class JarvisLive:
             loop.call_soon_threadsafe(mic_queue.put_nowait, indata.copy())
 
         stream = sd.InputStream(
-            samplerate=SEND_SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=VAD_CHUNK_SIZE,
-            callback=mic_callback,
-        )
+    samplerate=SEND_SAMPLE_RATE,
+    channels=CHANNELS,
+    dtype="float32",  # era int16
+    blocksize=VAD_CHUNK_SIZE,
+    callback=mic_callback,
+    device=1
+)
 
         print("[JARVIS] 🎤 Mic started")
         stream.start()
@@ -884,7 +996,7 @@ class JarvisLive:
         try:
             while True:
                 chunk = await mic_queue.get()
-                rms   = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2))) / 32768.0
+                rms = float(np.sqrt(np.mean(chunk ** 2)))
 
                 if rms > VAD_SILENCE_THRESHOLD:
                     if not speaking:
@@ -925,14 +1037,34 @@ class JarvisLive:
 
         import re
         normalized = text.lower().strip()
-        if not re.match(r"^jarvis[,\.\s]", normalized) and not normalized.startswith("jarvis"):
-            self.ui.set_state("LISTENING")
-            return
+        WAKE_WORDS = ["asistente"]
 
-        clean = re.sub(r"^jarvis[,\.\s]+", "", text, flags=re.IGNORECASE).strip()
+    # Verificar si el timeout de conversación expiró
+        now = asyncio.get_event_loop().time()
+        if self._in_conversation:
+            if now - self._last_interaction > self._conversation_timeout:
+                self._in_conversation = False
+                print("[JARVIS] 💤 Conversación expirada — wake word requerido")
+
+        if not self._in_conversation:
+            if not any(w in normalized for w in WAKE_WORDS):
+                self.ui.set_state("LISTENING")
+                return
+        # limpiar wake word del texto
+            clean = re.sub(
+                r"^(" + "|".join(WAKE_WORDS) + r")[,\.\s]*",
+                "", text, flags=re.IGNORECASE
+            ).strip() or text.strip()
+        else:
+            # en conversación — usar el texto completo
+            clean = text.strip()
+
         if not clean:
             self.ui.set_state("LISTENING")
             return
+
+    # actualizar timestamp
+        self._last_interaction = asyncio.get_event_loop().time()
 
         self.ui.write_log(f"You: {clean}")
         await self._respond(clean)
@@ -943,25 +1075,19 @@ class JarvisLive:
         """Procesa comandos de texto escritos desde la UI."""
         while True:
             text = await self._text_queue.get()
-            self.ui.write_log(f"You: {text}")
-            await self._respond(text)
+        self.ui.write_log(f"You: {text}")
+        await self._respond(text)
 
     # ── Respuesta común ───────────────────────────────────────────────────────
 
     async def _respond(self, user_text: str):
-        """Raíz común para voz y texto: chat → speak → memoria."""
         self.ui.set_state("THINKING")
         try:
             reply = await self._chat(user_text)
             if reply:
+                self._in_conversation = True
+                self._last_interaction = asyncio.get_event_loop().time()
                 await self._speak_async(reply)
-
-            # Actualizar memoria en background
-            threading.Thread(
-                target=_update_memory_async,
-                args=(user_text, reply),
-                daemon=True
-            ).start()
         except Exception as e:
             print(f"[JARVIS] ❌ _respond error: {e}")
             traceback.print_exc()
