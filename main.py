@@ -38,6 +38,7 @@ from actions.volume_mixer import volume_mixer
 from actions.screenshot import screenshot
 from actions.timer import timer
 from actions.writer import writer
+import datetime
 
 
 
@@ -56,7 +57,7 @@ SEND_SAMPLE_RATE    = 16000   # mic input
 CHANNELS            = 1
 
 # VAD settings
-VAD_SILENCE_THRESHOLD  = 0.01 # RMS por debajo de esto = silencio
+VAD_SILENCE_THRESHOLD  = 0.03 # RMS por debajo de esto = silencio
 VAD_SILENCE_DURATION   = 1.2    # segundos de silencio para cortar
 VAD_MIN_SPEECH_DURATION = 0.3   # mínimo de habla para procesar
 VAD_CHUNK_DURATION     = 0.01   # segundos por chunk de mic (50ms)
@@ -121,18 +122,18 @@ def _groq_tools() -> list:
         "'dictame esto en el chat'."
     ),
     "parameters": {
-        "type": "OBJECT",
+        "type": "object",
         "properties": {
             "text": {
-                "type": "STRING",
+                "type": "string",
                 "description": "Texto final a escribir (ya traducido si corresponde)."
             },
             "target_lang": {
-                "type": "STRING",
+                "type": "string",
                 "description": "Idioma al que se tradujo, para el log. Ej: 'inglés', 'francés'."
             },
             "delay": {
-                "type": "NUMBER",
+                "type": "number",
                 "description": "Segundos de espera antes de escribir para que el usuario posicione el cursor. Default: 1.0"
             },
         },
@@ -148,26 +149,26 @@ def _groq_tools() -> list:
         "También puede cancelar timers activos o listarlos."
     ),
     "parameters": {
-        "type": "OBJECT",
+        "type": "object",
         "properties": {
             "action": {
-                "type": "STRING",
+                "type": "string",
                 "description": "set | alarm | cancel | list (default: set)"
             },
             "label": {
-                "type": "STRING",
+                "type": "string",
                 "description": "Nombre del timer o alarma. Ej: 'pasta', 'reunión', 'despertar'."
             },
             "duration": {
-                "type": "STRING",
+                "type": "string",
                 "description": "Duración para timers. Ej: '5 minutos', '30 segundos', '1 hora 30 minutos'."
             },
             "alarm_at": {
-                "type": "STRING",
+                "type": "string",
                 "description": "Hora para alarmas. Ej: '14:30', '8 de la mañana', '9:00pm'."
             },
             "timer_id": {
-                "type": "STRING",
+                "type": "string",
                 "description": "Nombre del timer a cancelar (para action=cancel)."
             },
         },
@@ -182,18 +183,18 @@ def _groq_tools() -> list:
         "Permite elegir dónde guardarla y con qué nombre."
     ),
     "parameters": {
-        "type": "OBJECT",
+        "type": "object",
         "properties": {
             "destination": {
-                "type": "STRING",
+                "type": "string",
                 "description": "Carpeta donde guardar la captura. Ej: 'C:/Users/usuario/Desktop'. Si no se especifica usa Imágenes/Screenshots."
             },
             "filename": {
-                "type": "STRING",
+                "type": "string",
                 "description": "Nombre del archivo sin extensión. Si no se especifica se usa la fecha y hora."
             },
             "monitor": {
-                "type": "INTEGER",
+                "type": "integer",
                 "description": "Número de monitor (1 = principal, 2 = secundario). Default: 1."
             },
         },
@@ -843,9 +844,9 @@ class JarvisLive:
 
             elif name == "screen_process":
                 threading.Thread(
-                target=_update_memory_async,
-                args=(user_text, reply),
-                daemon=True
+                    target=screen_process,
+                    kwargs={"parameters": args, "response": None, "player": self.ui, "session_memory": None},
+                    daemon=True
                 ).start()
                 result = "Vision module activated."
 
@@ -947,6 +948,8 @@ class JarvisLive:
                 if isinstance(m.get("content"), str):
                     m["content"] = re.sub(r"<function=\w+\{.*?\}</function>", "", m["content"], flags=re.DOTALL)
                     m["content"] = re.sub(r"<function=[^>]*>", "", m["content"]).strip()
+                if m.get("role") in ("user", "assistant") and not m.get("content") and not m.get("tool_calls"):
+                    continue
                 clean.append(m)
             return clean
 
@@ -1169,8 +1172,8 @@ class JarvisLive:
         """Procesa comandos de texto escritos desde la UI."""
         while True:
             text = await self._text_queue.get()
-        self.ui.write_log(f"You: {text}")
-        await self._respond(text)
+            self.ui.write_log(f"You: {text}")
+            await self._respond(text)
 
     # ── Respuesta común ───────────────────────────────────────────────────────
 

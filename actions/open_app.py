@@ -81,6 +81,21 @@ def _is_running(app_name: str) -> bool:
 
 
 def _launch_windows(app_name: str) -> bool:
+    if shutil.which(app_name) or shutil.which(app_name.lower()):
+        try:
+            subprocess.Popen(app_name, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.3)
+            return True
+        except Exception:
+            pass
+
+    try:
+        subprocess.Popen(app_name, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.3)
+        return True
+    except Exception:
+        pass
+
     try:
         import pyautogui
         pyautogui.PAUSE = 0.1
@@ -89,10 +104,10 @@ def _launch_windows(app_name: str) -> bool:
         pyautogui.write(app_name, interval=0.05)
         time.sleep(0.5)
         pyautogui.press("enter")
-        time.sleep(0.5)  # solo para que el keypress registre
+        time.sleep(0.5)
         return True
     except Exception as e:
-        print(f"[open_app] ⚠️ Windows launch failed: {e}")
+        print(f"[open_app] Windows launch failed: {e}")
         return False
 
 def _launch_macos(app_name: str) -> bool:
