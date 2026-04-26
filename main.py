@@ -38,6 +38,8 @@ from actions.volume_mixer import volume_mixer
 from actions.screenshot import screenshot
 from actions.timer import timer
 from actions.writer import writer
+from actions.screenshot import screenshot
+from memory.config_manager import load_api_keys
 import datetime
 
 
@@ -46,6 +48,32 @@ def get_base_dir():
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
     return Path(__file__).resolve().parent
+
+
+_ALWAYS_TOOLS = {
+        "save_memory", "open_app", "close_app",
+        "timer", "screenshot", "volume_mixer",
+        "web_search", "weather_report", "computer_settings"
+    }
+
+_TOOL_KEYWORDS = {
+        "send_message":     ["mensaje", "whatsapp", "telegram", "mandá", "enviá"],
+        "youtube_video":    ["youtube", "video", "reproducí", "play", "mirá"],
+        "screen_process":   ["pantalla", "screen", "ves", "mirá", "analizá", "cámara"],
+        "browser_control":  ["abrí", "navegador", "página", "sitio", "chrome", "web"],
+        "file_controller":  ["archivo", "carpeta", "file", "mové", "copiá", "borrá"],
+        "cmd_control":      ["cmd", "terminal", "comando", "ejecutá"],
+        "computer_control": ["click", "escribí", "teclado", "mouse", "hotkey"],
+        "code_helper":      ["código", "code", "programa", "script", "función", "bug"],
+        "dev_agent":        ["proyecto", "aplicación", "construí", "creá una app"],
+        "agent_task":       ["hace todo", "tarea compleja", "automati"],
+        "writer":           ["traducí", "escribí", "translate", "redactá"],
+        "desktop_control":  ["escritorio", "desktop", "fondo de pantalla", "wallpaper"],
+        "game_updater":     ["steam", "epic", "juego", "game", "actualiz"],
+        "flight_finder":    ["vuelo", "flight", "viaje", "avión"],
+        "reminder":         ["recordatorio", "reminder", "recordame"],
+        "computer_settings":["brillo", "brightness", "wifi", "apagar", "reiniciar", "shutdown"],
+    }
 
 
 BASE_DIR        = get_base_dir()
@@ -548,20 +576,40 @@ def _groq_tools() -> list:
 
 # ── TTS ───────────────────────────────────────────────────────────────────────
 
-async def _tts_speak(text: str) -> tuple[np.ndarray, int]:
+async def _tts_speak(text: str, device: int | None = None):
+    """Reproduce edge-tts en streaming — empieza a sonar antes de terminar de generar."""
     import edge_tts, io, soundfile as sf
+    import sounddevice as sd
 
-    voice = "es-AR-TomasNeural"  # español 
+    voice     = "es-AR-TomasNeural"
     communicate = edge_tts.Communicate(text, voice)
 
     mp3_buf = io.BytesIO()
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            mp3_buf.write(chunk["data"])
 
-    mp3_buf.seek(0)
-    samples, sr = sf.read(mp3_buf, dtype="float32")
-    return samples, sr
+    async for chunk in communicate.stream():
+        if chunk["type"] != "audio":
+            continue
+        mp3_buf.write(chunk["data"])
+
+        # empezar a reproducir cuando tenemos suficiente buffer (~12KB)
+        if mp3_buf.tell() >= 32768:
+            data = mp3_buf.getvalue()
+            mp3_buf = io.BytesIO()  # reset para los siguientes chunks
+            try:
+                samples, sr = sf.read(io.BytesIO(data), dtype="float32")
+                await asyncio.to_thread(sd.play, samples, sr, blocking=True)
+            except Exception:
+                pass  # chunk parcial inválido — continuar acumulando
+
+    # reproducir lo que quedó
+    remaining = mp3_buf.getvalue()
+    if remaining:
+        try:
+            samples, sr = sf.read(io.BytesIO(remaining), dtype="float32")
+            await asyncio.to_thread(sd.play, samples, sr, blocking=True)
+        except Exception:
+            pass
+
     
 
 
@@ -699,12 +747,10 @@ class JarvisLive:
         self.set_speaking(True)
         self.ui.write_log(f"Jarvis: {text}")
         try:
-            samples, sr = await _tts_speak(text)
-            await asyncio.to_thread(_play_audio_samples, samples, sr)
+            await _tts_speak(text)
         finally:
             self.set_speaking(False)
-
-    # ── System prompt ─────────────────────────────────────────────────────────
+        # ── System prompt ─────────────────────────────────────────────────────────
 
     def _build_system_prompt(self) -> str:
         from datetime import datetime
@@ -840,7 +886,15 @@ class JarvisLive:
             elif name == "youtube_video":
                 result = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
             elif name == "screenshot":
+
                 result = await loop.run_in_executor(None, lambda: screenshot(parameters=args, player=self.ui))
+
+                if result and "Screenshot guardada en" in result:
+                    import re
+                    match = re.search(r"Screenshot guardada en (.+?), sir", result)
+                    if match:
+                        path = match.group(1).strip()
+                        self.ui.root.after(0, lambda: self.ui.show_screenshot_button(path))
 
             elif name == "screen_process":
                 threading.Thread(
@@ -917,20 +971,42 @@ class JarvisLive:
         print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
         return result or "Done."
 
-    # ── Chat con Groq ─────────────────────────────────────────────────────────
+  #chat
 
     @staticmethod
     def _clean_response(text: str) -> str:
         import re
+    # limpiar <function=...> 
         text = re.sub(r"<function=\w+\{.*?\}</function>", "", text, flags=re.DOTALL)
         text = re.sub(r"<function=[^>]*>", "", text)
-        text = re.sub(r"\{[^}]*\}\s*$", "", text)
+    # limpiar JSON de tool calls que el modelo mete en el texto
+        text = re.sub(r'\{"query".*?\}', "", text, flags=re.DOTALL)
+        text = re.sub(r'\{"\w+":.*?\}(?:\s*</function>)?', "", text, flags=re.DOTALL)
+        text = re.sub(r'\(Nota:.*?\)', "", text, flags=re.DOTALL)
+        text = re.sub(r'"Buscando.*?"', "", text)
+        text = re.sub(r'\{[^}]*\}\s*$', "", text)
         return text.strip()
+
+
+    @staticmethod
+    def _select_tools(user_text: str) -> list:
+        all_tools = {t["function"]["name"]: t for t in _groq_tools()}
+        selected  = set(_ALWAYS_TOOLS)
+
+        if len(user_text.split()) <= 8:
+            return [all_tools[name] for name in selected if name in all_tools]
+
+        text_lower = user_text.lower()
+        for tool_name, keywords in _TOOL_KEYWORDS.items():
+            if any(kw in text_lower for kw in keywords):
+                selected.add(tool_name)
+
+        return [all_tools[name] for name in selected if name in all_tools]
 
     async def _chat(self, user_text: str) -> str:
         import re, uuid
         from core.llm_client import groq_chat_response  # ← único import de LLM
-        tools = _groq_tools()
+        tools = self._select_tools(user_text)
 
         last = self._conversation[-1] if self._conversation else None
         if not (last and last.get("role") == "user" and last.get("content") == user_text):
@@ -948,8 +1024,6 @@ class JarvisLive:
                 if isinstance(m.get("content"), str):
                     m["content"] = re.sub(r"<function=\w+\{.*?\}</function>", "", m["content"], flags=re.DOTALL)
                     m["content"] = re.sub(r"<function=[^>]*>", "", m["content"]).strip()
-                if m.get("role") in ("user", "assistant") and not m.get("content") and not m.get("tool_calls"):
-                    continue
                 clean.append(m)
             return clean
 
@@ -966,6 +1040,31 @@ class JarvisLive:
                 )
             except Exception as e:
                 print(f"[JARVIS] ❌ LLM error: {e}")
+                err_str = str(e)
+                import uuid
+                fg_match = (
+                    re.search(r"<function=(\w+)>\s*(\{.*?\})\s*</?function>", err_str, re.DOTALL) or
+                    re.search(r"<function=(\w+)>\s*(\{.*?\})", err_str, re.DOTALL) or
+                    re.search(r"<function=(\w+)\{(.*?)\}", err_str, re.DOTALL)
+                )
+                if fg_match:
+                    fn_name  = fg_match.group(1)
+                    raw_args = fg_match.group(2).strip()
+                    if not raw_args.startswith("{"):
+                        raw_args = "{" + raw_args
+                    if not raw_args.endswith("}"):
+                        raw_args += "}"
+                    try:
+                        args = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        pairs = re.findall(r'"(\w+)"\s*:\s*"([^"]*)"', raw_args)
+                        args  = {k: v for k, v in pairs}
+                    print(f"[JARVIS] 🔧 Recovered: {fn_name}({args})")
+                    tool_result = await self._execute_tool(fn_name, args)
+                    fake_id = str(uuid.uuid4())
+                    messages.append({"role": "assistant", "content": "", "tool_calls": [{"id": fake_id, "type": "function", "function": {"name": fn_name, "arguments": json.dumps(args)}}]})
+                    messages.append({"role": "tool", "tool_call_id": fake_id, "content": str(tool_result)})
+                    continue
                 self._conversation.append({"role": "assistant", "content": ""})
                 return "I encountered an error, sir. Please try again."
 
@@ -1062,14 +1161,19 @@ class JarvisLive:
                     return
             loop.call_soon_threadsafe(mic_queue.put_nowait, indata.copy())
 
+        # reemplazar device=1 por:
+
+        cfg        = load_api_keys()
+        mic_device = cfg.get("mic_device", 1)
+
         stream = sd.InputStream(
-    samplerate=SEND_SAMPLE_RATE,
-    channels=CHANNELS,
-    dtype="float32",  # era int16
-    blocksize=VAD_CHUNK_SIZE,
-    callback=mic_callback,
-    device=1
-)
+            samplerate=SEND_SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype="float32",
+            blocksize=VAD_CHUNK_SIZE,
+            callback=mic_callback,
+            device=mic_device,
+        )
 
         print("[JARVIS] 🎤 Mic started")
         stream.start()

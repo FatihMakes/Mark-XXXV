@@ -80,21 +80,103 @@ def _is_running(app_name: str) -> bool:
     return False
 
 
+
+import os as _os
+import glob as _glob
+
+_WIN_PATHS = {
+    "chrome": [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        _os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+    ],
+    "brave": [
+        r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        _os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+    ],
+    "firefox": [
+        r"C:\Program Files\Mozilla Firefox\firefox.exe",
+        r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+    ],
+    "discord": [
+    *_glob.glob(_os.path.expandvars(r"%LOCALAPPDATA%\Discord\app-*\Discord.exe")),
+],
+    "spotify": [
+        _os.path.expandvars(r"%APPDATA%\Spotify\Spotify.exe"),
+        _os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps\Spotify.exe"),
+    ],
+    "code": [
+        r"C:\Program Files\Microsoft VS Code\Code.exe",
+        _os.path.expandvars(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"),
+    ],
+    "vscode": [
+        r"C:\Program Files\Microsoft VS Code\Code.exe",
+        _os.path.expandvars(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"),
+    ],
+    "telegram": [
+        _os.path.expandvars(r"%APPDATA%\Telegram Desktop\Telegram.exe"),
+        _os.path.expandvars(r"%LOCALAPPDATA%\Telegram Desktop\Telegram.exe"),
+    ],
+    "steam": [
+        r"C:\Program Files (x86)\Steam\steam.exe",
+        r"C:\Program Files\Steam\steam.exe",
+    ],
+    "vlc": [
+        r"C:\Program Files\VideoLAN\VLC\vlc.exe",
+        r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
+    ],
+    "msedge": [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ],
+    "edge": [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ],
+    "notepad":    ["notepad.exe"],
+    "calc":       ["calc.exe"],
+    "calculator": ["calc.exe"],
+    "explorer":   ["explorer.exe"],
+    "cmd":        ["cmd.exe"],
+    "powershell": ["powershell.exe"],
+    "taskmgr":    ["taskmgr.exe"],
+    "task manager": ["taskmgr.exe"],
+    "mspaint":    ["mspaint.exe"],
+    "paint":      ["mspaint.exe"],
+}
+
+
+def _resolve_win_path(key: str):
+    candidates = _WIN_PATHS.get(key.lower().strip().replace(".exe", ""), [])
+    for p in candidates:
+        if "*" in p:
+            matches = _glob.glob(p)
+            if matches:
+                return sorted(matches)[-1]
+        elif _os.path.exists(p):
+            return p
+    return None
+
+
 def _launch_windows(app_name: str) -> bool:
-    if shutil.which(app_name) or shutil.which(app_name.lower()):
+    key  = app_name.lower().strip().replace(".exe", "")
+    path = _resolve_win_path(key)
+    if path:
         try:
-            subprocess.Popen(app_name, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.3)
+            return True
+        except Exception as e:
+            print(f"[open_app] direct path failed: {e}")
+
+    which = shutil.which(app_name) or shutil.which(key)
+    if which:
+        try:
+            subprocess.Popen([which], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(0.3)
             return True
         except Exception:
             pass
-
-    try:
-        subprocess.Popen(app_name, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(0.3)
-        return True
-    except Exception:
-        pass
 
     try:
         import pyautogui

@@ -42,8 +42,8 @@ def groq_chat_response(
         model=model,
         messages=messages,
         temperature=0.6,
-        max_tokens=1024,
-    )
+        max_tokens=512,
+)
     if tools:
         params["tools"] = tools
         params["tool_choice"] = "auto"

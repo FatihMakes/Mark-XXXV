@@ -107,6 +107,19 @@ class JarvisUI:
         self.log_text.tag_config("sys", foreground=C_ACC2)
         self.log_text.tag_config("err", foreground=C_RED)
 
+        # botón selector de mic — esquina inferior izquierda, encima del mute
+        self._mic_btn = tk.Button(
+        self.root,
+        text="🎙 MIC",
+        command=self.show_mic_selector,
+        fg=C_MID, bg=C_PANEL,
+        font=("Courier", 8),
+        borderwidth=0, cursor="hand2",
+        highlightthickness=1,
+        highlightbackground=C_DIM,
+    )
+        self._mic_btn.place(x=18, y=self.H - 100, width=110, height=24)
+
         # ── Klavye girişi ─────────────────────────────────────────────────────
         INPUT_Y = LOG_Y + LH + 6
         self._build_input_bar(LW, INPUT_Y)
@@ -127,6 +140,98 @@ class JarvisUI:
         self.overlay = JarvisOverlay(self.root)
 
     # ── Mute butonu ───────────────────────────────────────────────────────────
+
+    def show_mic_selector(self):
+        import sounddevice as sd
+        import json
+
+        devices = sd.query_devices()
+        input_devs = [
+            (i, d["name"]) for i, d in enumerate(devices)
+            if d["max_input_channels"] > 0
+            and "mapper" not in d["name"].lower()
+            and "primary" not in d["name"].lower()
+            and "droidcam" not in d["name"].lower()
+        ]
+
+        win = tk.Toplevel(self.root)
+        win.title("Seleccionar micrófono")
+        win.configure(bg="#000d12")
+        win.resizable(False, False)
+        win.geometry("400x300")
+        win.attributes("-topmost", True)
+
+        tk.Label(win, text="SELECCIONAR MICRÓFONO",
+                 fg="#00d4ff", bg="#000d12",
+                font=("Courier", 11, "bold")).pack(pady=(16, 8))
+
+        var = tk.IntVar(value=1)
+
+    # cargar selección actual
+        try:
+            cfg = json.loads(API_FILE.read_text(encoding="utf-8"))
+            var.set(cfg.get("mic_device", 1))
+        except Exception:
+            pass
+
+        frame = tk.Frame(win, bg="#000d12")
+        frame.pack(fill="both", expand=True, padx=16)
+
+        for idx, name in input_devs:
+            tk.Radiobutton(
+                frame,
+                text=f"{idx} — {name[:45]}",
+                variable=var, value=idx,
+                fg="#8ffcff", bg="#000d12",
+                selectcolor="#003344",
+                activebackground="#000d12",
+                activeforeground="#00d4ff",
+                font=("Courier", 9),
+                anchor="w",
+            ).pack(fill="x", pady=2)
+
+        def _save():
+            try:
+                cfg = {}
+                if API_FILE.exists():
+                    cfg = json.loads(API_FILE.read_text(encoding="utf-8"))
+                    cfg["mic_device"] = var.get()
+                    API_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+                    self.write_log(f"SYS: Micrófono guardado (device {var.get()}). Reiniciá para aplicar.")
+            except Exception as e:
+                self.write_log(f"ERR: No se pudo guardar: {e}")
+                win.destroy()
+
+            tk.Button(
+            win, text="✓ GUARDAR",
+            command=_save,
+            fg="#000000", bg="#00d4ff",
+            font=("Courier", 10, "bold"),
+            borderwidth=0, pady=6, cursor="hand2",
+        ).pack(pady=12)
+
+    def show_screenshot_button(self, path: str):
+        """Muestra un botón temporal que abre la carpeta de la captura."""
+        import subprocess
+
+        BTN_W, BTN_H = 180, 26
+        x = (self.W - BTN_W) // 2
+        y = self.H - 120  # encima del input
+
+        btn = tk.Button(
+            self.root,
+            text="📂 Abrir carpeta",
+            command=lambda: subprocess.Popen(f'explorer /select,"{path}"'),
+            fg="#00d4ff", bg="#000d12",
+            activeforeground="#000000", activebackground="#00d4ff",
+            font=("Courier", 9, "bold"),
+            borderwidth=0, cursor="hand2",
+            highlightthickness=1,
+            highlightbackground="#007a99",
+        )
+        btn.place(x=x, y=y, width=BTN_W, height=BTN_H)
+        # desaparece solo a los 8 segundos
+        self.root.after(8000, btn.destroy)
 
     def _build_mute_button(self):
         """Sol alt köşeye mute butonu yerleştirir."""

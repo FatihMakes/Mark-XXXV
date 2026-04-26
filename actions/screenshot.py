@@ -10,7 +10,13 @@ from pathlib import Path
 
 
 def _default_path() -> Path:
-    return Path.home() / "Pictures" / "Screenshots"
+    # Path.home() devuelve el home real del usuario actual
+    pictures = Path.home() / "Pictures"
+    if not pictures.exists():
+        pictures = Path.home() / "Imágenes"  # Windows en español
+    if not pictures.exists():
+        pictures = Path.home() / "Desktop"   # fallback al escritorio
+    return pictures / "Screenshots"
 
 
 def _sanitize_filename(name: str) -> str:
@@ -29,9 +35,12 @@ def screenshot(parameters: dict, player=None) -> str:
 
     dest     = (parameters.get("destination") or "").strip()
     filename = (parameters.get("filename") or "").strip()
-    monitor  = parameters.get("monitor", 1)  # 1 = monitor principal
+    monitor  = parameters.get("monitor", 1)
 
-    # Resolver carpeta destino
+    # ignorar si el modelo mandó una ruta con "usuario" literal
+    if dest and ("\\usuario\\" in dest or "/usuario/" in dest):
+        dest = ""
+
     if dest:
         folder = Path(dest).expanduser()
     else:
@@ -39,7 +48,6 @@ def screenshot(parameters: dict, player=None) -> str:
 
     folder.mkdir(parents=True, exist_ok=True)
 
-    # Resolver nombre de archivo
     if filename:
         filename = _sanitize_filename(filename)
         if not filename.lower().endswith((".png", ".jpg")):
