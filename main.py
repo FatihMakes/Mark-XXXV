@@ -19,7 +19,6 @@ from memory.memory_manager import (
 
 from actions.flight_finder     import flight_finder
 from actions.open_app          import open_app, close_app
-from actions.weather_report    import weather_action
 from actions.send_message      import send_message
 from actions.reminder          import reminder
 from actions.computer_settings import computer_settings
@@ -289,17 +288,7 @@ def _groq_tools() -> list:
                 "required": ["query"]
             }
         },
-        {
-            "name": "weather_report",
-            "description": "Gets real-time weather information for a city.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "city": {"type": "string", "description": "City name"}
-                },
-                "required": ["city"]
-            }
-        },
+        
         {
             "name": "send_message",
             "description": "Sends a text message via WhatsApp, Telegram, or other messaging platform.",
@@ -868,9 +857,6 @@ class JarvisLive:
             elif name == "volume_mixer":
                 result = await loop.run_in_executor(None, lambda: volume_mixer(parameters=args, player=self.ui))
 
-            elif name == "weather_report":
-                result = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
-
             elif name == "browser_control":
                 result = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
 
@@ -985,6 +971,10 @@ class JarvisLive:
         text = re.sub(r'\(Nota:.*?\)', "", text, flags=re.DOTALL)
         text = re.sub(r'"Buscando.*?"', "", text)
         text = re.sub(r'\{[^}]*\}\s*$', "", text)
+        text = re.sub(r"<web_search>.*?</function>", "", text, flags=re.DOTALL)
+        text = re.sub(r"\(Espero.*?\)", "", text, flags=re.DOTALL)
+        text = re.sub(r"\(Por favor.*?\)", "", text, flags=re.DOTALL)
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
         return text.strip()
 
 
@@ -1029,7 +1019,7 @@ class JarvisLive:
 
         messages = [{"role": "system", "content": system_prompt}] + _sanitize(self._conversation)
 
-        MAX_TOOL_ROUNDS = 5
+        MAX_TOOL_ROUNDS = 3
         for _ in range(MAX_TOOL_ROUNDS):
             try:
                 response = await asyncio.to_thread(
@@ -1071,6 +1061,8 @@ class JarvisLive:
                             "content": str(tool_result)
                         })
                         continue  # ← vuelve al loop, LLM genera respuesta final
+
+                
     
                     self._conversation.append({"role": "assistant", "content": ""})
                     return "I encountered an error, sir. Please try again."
@@ -1134,11 +1126,25 @@ class JarvisLive:
                         "tool_call_id": tc.id,
                         "content":      str(tool_result),
                     })
+
+                    if len(msg.tool_calls) == 1:
+                        tool_name = msg.tool_calls[0].function.name
+                        info_tools = {"web_search", "screen_process", "flight_finder", "weather_report"}
+                        if tool_name in info_tools:
+                            tool_result = next(
+                            (m["content"] for m in reversed(messages) if m.get("role") == "tool"),
+                            None
+                            )
+                        if tool_result and len(tool_result) > 20:
+                        self._conversation.append({"role": "assistant", "content": tool_result})
+                        return tool_result
+            
                 continue
 
             final_text = self._clean_response(msg.content or "")
             self._conversation.append({"role": "assistant", "content": final_text})
             return final_text
+        
 
         return "I completed the requested actions, sir."
 

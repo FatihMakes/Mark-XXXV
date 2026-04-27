@@ -6,7 +6,7 @@ BACKEND = "groq"
 # BACKEND = "ollama"
 # ────────────────────────────────────────────────────────────────────────────
 
-GROQ_MODEL   = "llama-3.1-8b-instant"
+GROQ_MODEL   = "qwen/qwen3-32b"
 OLLAMA_MODEL = "llama3.2:3b"
 OLLAMA_URL   = "http://localhost:11434/v1"
 
@@ -37,16 +37,27 @@ def groq_chat_response(
     model: str = DEFAULT_MODEL,
     **kwargs,
 ):
+    import time
     client = _get_client()
     params = dict(
         model=model,
         messages=messages,
         temperature=0.6,
         max_tokens=512,
-)
+    )
     if tools:
         params["tools"] = tools
         params["tool_choice"] = "auto"
         params["parallel_tool_calls"] = False
+        
 
-    return client.chat.completions.create(**params)
+    for attempt in range(3):
+        try:
+            return client.chat.completions.create(**params)
+        except Exception as e:
+            if "429" in str(e) and attempt < 2:
+                wait = 3 + attempt * 2
+                print(f"[LLM] Rate limit, esperando {wait}s...")
+                time.sleep(wait)
+                continue
+            raise

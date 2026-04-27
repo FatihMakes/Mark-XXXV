@@ -30,13 +30,49 @@ def _groq_search(query: str) -> str:
             "content": f"Search the web for the following query and provide a concise, accurate answer: {query}"
         }],
         temperature=0.4,
+        max_tokens=80,
     )
     text = response.choices[0].message.content.strip()
     if not text:
         raise ValueError("Empty response")
     return text
 
+def _ddg_then_summarize(query: str) -> str:
+    results = _ddg_search(query, max_results=6)
+    if not results:
+        return f"No encontré información sobre: {query}"
+    
+    context = "\n".join([
+        f"- {r['title']}: {r['snippet']}" 
+        for r in results if r.get("snippet")
+    ])
 
+    if not context:
+        return f"No encontré snippets útiles para: {query}"
+
+    try:
+        response = groq_chat_response(
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Search results for '{query}':\n\n"
+                    f"{context}\n\n"
+                    f"Extract the current temperature number from these results. "
+                    f"Reply with ONLY: 'La temperatura actual en [place] es de X°C.' "
+                    f"If no specific number found, reply: 'No se encontró temperatura exacta, pero [brief summary].'"
+                )
+            }],
+            temperature=0.1,
+            max_tokens=80,
+        )
+        result = response.choices[0].message.content.strip()
+        if not result:
+            raise ValueError("Empty response")
+        return result
+    except Exception as e:
+        print(f"[DDG] Summarize failed: {e}")
+        first = results[0]
+        return f"{first['title']}: {first['snippet'][:200]}"
 
 def _ddg_search(query: str, max_results: int = 6) -> list:
     try:
@@ -110,13 +146,15 @@ def web_search(
     print(f"[WebSearch] 🔍 Query: {query!r}  Mode: {mode}")
 
     try:
-        if mode == "compare" and items:
-            print(f"[WebSearch] 📊 Comparing: {items}")
-            result = _compare(items, aspect)
-            print("[WebSearch] ✅ Compare done.")
-            return result
+        print("[WebSearch] 🌐 Searching...")
+        
+        # clima y datos en tiempo real → DDG directo (Groq no tiene datos actuales)
+        realtime_keywords = ["clima", "weather", "temperatura", "lluvia", "pronóstico", "forecast"]
+        if any(w in query.lower() for w in realtime_keywords):
+            print("[WebSearch] 🌦️ Realtime query → DDG + summarize")
+            return _ddg_then_summarize(query)
 
-        print("[WebSearch] 🌐 Groq search...")
+        # resto → Groq primero, DDG como fallback
         try:
             result = _groq_search(query)
             print("[WebSearch] ✅ Groq OK.")
@@ -127,7 +165,6 @@ def web_search(
             result  = _format_ddg(query, results)
             print(f"[WebSearch] ✅ DDG: {len(results)} results.")
             return result
-
     except Exception as e:
         print(f"[WebSearch] ❌ Failed: {e}")
         return f"Search failed, sir: {e}"
