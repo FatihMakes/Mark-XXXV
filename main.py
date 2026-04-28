@@ -40,7 +40,7 @@ from actions.writer import writer
 from actions.screenshot import screenshot
 from memory.config_manager import load_api_keys
 import datetime
-
+from core.llm_client import groq_chat_response, FAST_MODEL, SMART_MODEL
 
 
 def get_base_dir():
@@ -962,10 +962,9 @@ class JarvisLive:
     @staticmethod
     def _clean_response(text: str) -> str:
         import re
-    # limpiar <function=...> 
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
         text = re.sub(r"<function=\w+\{.*?\}</function>", "", text, flags=re.DOTALL)
         text = re.sub(r"<function=[^>]*>", "", text)
-    # limpiar JSON de tool calls que el modelo mete en el texto
         text = re.sub(r'\{"query".*?\}', "", text, flags=re.DOTALL)
         text = re.sub(r'\{"\w+":.*?\}(?:\s*</function>)?', "", text, flags=re.DOTALL)
         text = re.sub(r'\(Nota:.*?\)', "", text, flags=re.DOTALL)
@@ -974,7 +973,6 @@ class JarvisLive:
         text = re.sub(r"<web_search>.*?</function>", "", text, flags=re.DOTALL)
         text = re.sub(r"\(Espero.*?\)", "", text, flags=re.DOTALL)
         text = re.sub(r"\(Por favor.*?\)", "", text, flags=re.DOTALL)
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
         return text.strip()
 
 
@@ -995,7 +993,7 @@ class JarvisLive:
 
     async def _chat(self, user_text: str) -> str:
         import re, uuid
-        from core.llm_client import groq_chat_response  # ← único import de LLM
+        from core.llm_client import groq_chat_response, FAST_MODEL, SMART_MODEL
         tools = self._select_tools(user_text)
 
         last = self._conversation[-1] if self._conversation else None
@@ -1026,8 +1024,10 @@ class JarvisLive:
                     lambda: groq_chat_response(
                         messages=messages,
                         tools=tools,
+                        model=FAST_MODEL,
                     )
                 )
+                print(f"[LLM] Smart model: {SMART_MODEL}")
             except Exception as e:
                 print(f"[JARVIS] ❌ LLM error: {e}")
                 err_str = str(e)
@@ -1048,28 +1048,21 @@ class JarvisLive:
                     except json.JSONDecodeError:
                         pairs = re.findall(r'"(\w+)"\s*:\s*"([^"]*)"', raw_args)
                         args  = {k: v for k, v in pairs}
-                        print(f"[JARVIS] 🔧 Recovered: {fn_name}({args})")
-                        tool_result = await self._execute_tool(fn_name, args)
-                        fake_id = str(uuid.uuid4())
-                        messages.append({
-                            "role": "assistant", "content": "",
-                            "tool_calls": [{"id": fake_id, "type": "function", "function": {"name": fn_name, "arguments": json.dumps(args)}}]
-                        })
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": fake_id,
-                            "content": str(tool_result)
-                        })
-                        continue  # ← vuelve al loop, LLM genera respuesta final
-
-                
-    
-                    self._conversation.append({"role": "assistant", "content": ""})
-                    return "I encountered an error, sir. Please try again."
+                    print(f"[JARVIS] 🔧 Recovered: {fn_name}({args})")
+                    tool_result = await self._execute_tool(fn_name, args)
+                    fake_id = str(uuid.uuid4())
+                    messages.append({
+                        "role": "assistant", "content": "",
+                        "tool_calls": [{"id": fake_id, "type": "function", "function": {"name": fn_name, "arguments": json.dumps(args)}}]
+                    })
+                    messages.append({"role": "tool", "tool_call_id": fake_id, "content": str(tool_result)})
+                    continue
+                self._conversation.append({"role": "assistant", "content": ""})
+                return "I encountered an error, sir. Please try again."
 
             msg = response.choices[0].message
 
-        # qwen a veces mete tool calls en el texto en lugar de tool_calls struct
+            # modelo a veces mete tool calls en texto
             if not msg.tool_calls and msg.content:
                 match = re.search(r"<function=(\w+)(\{.*?)(?:</function>|$)", msg.content, re.DOTALL)
                 if match:
@@ -1082,7 +1075,6 @@ class JarvisLive:
                     except json.JSONDecodeError:
                         pairs = re.findall(r'"(\w+)"\s*:\s*"([^"]*)"', raw_args)
                         args  = {k: v for k, v in pairs}
-
                     tool_result = await self._execute_tool(fn_name, args)
                     fake_id = str(uuid.uuid4())
                     messages.append({
@@ -1097,11 +1089,7 @@ class JarvisLive:
                     "role": "assistant",
                     "content": msg.content or "",
                     "tool_calls": [
-                        {
-                            "id":       tc.id,
-                            "type":     "function",
-                            "function": {"name": tc.function.name, "arguments": tc.function.arguments}
-                        }
+                        {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                         for tc in msg.tool_calls
                     ]
                 })
@@ -1119,32 +1107,58 @@ class JarvisLive:
                         except json.JSONDecodeError:
                             pairs = re.findall(r'"(\w+)"\s*:\s*"([^"]*)"', fixed)
                             args = {k: v for k, v in pairs}
-
                     tool_result = await self._execute_tool(tc.function.name, args)
-                    messages.append({
-                        "role":         "tool",
-                        "tool_call_id": tc.id,
-                        "content":      str(tool_result),
-                    })
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(tool_result)})
 
-                    if len(msg.tool_calls) == 1:
-                        tool_name = msg.tool_calls[0].function.name
-                        info_tools = {"web_search", "screen_process", "flight_finder", "weather_report"}
-                        if tool_name in info_tools:
-                            tool_result = next(
+                # info tools → devolver resultado directo
+                if len(msg.tool_calls) == 1:
+                    tool_name = msg.tool_calls[0].function.name
+                    info_tools = {"web_search", "screen_process", "flight_finder"}
+                    if tool_name in info_tools:
+                        tool_result = next(
                             (m["content"] for m in reversed(messages) if m.get("role") == "tool"),
                             None
-                            )
+                        )
                         if tool_result and len(tool_result) > 20:
-                        self._conversation.append({"role": "assistant", "content": tool_result})
-                        return tool_result
-            
-                continue
+                            self._conversation.append({"role": "assistant", "content": tool_result})
+                            return tool_result
 
-            final_text = self._clean_response(msg.content or "")
+                # Fase 2: modelo inteligente genera respuesta final
+                try:
+                    final_response = await asyncio.to_thread(
+                        lambda: groq_chat_response(
+                            messages=messages,
+                            model=SMART_MODEL,
+                            max_tokens=150,
+                        )
+                    )
+                    final_text = self._clean_response(final_response.choices[0].message.content or "")
+                    self._conversation.append({"role": "assistant", "content": final_text})
+                    return final_text
+                except Exception as e:
+                    print(f"[JARVIS] ⚠️ Smart model failed: {e}")
+                    tool_result = next(
+                        (m["content"] for m in reversed(messages) if m.get("role") == "tool"),
+                        "Done."
+                    )
+                    self._conversation.append({"role": "assistant", "content": tool_result})
+                    return tool_result
+
+            # sin tool calls → respuesta conversacional con modelo inteligente
+            try:
+                smart_response = await asyncio.to_thread(
+                    lambda: groq_chat_response(
+                        messages=messages,
+                        model=SMART_MODEL,
+                        max_tokens=150,
+                    )
+                )
+                final_text = self._clean_response(smart_response.choices[0].message.content or "")
+            except Exception:
+                final_text = self._clean_response(msg.content or "")
+
             self._conversation.append({"role": "assistant", "content": final_text})
             return final_text
-        
 
         return "I completed the requested actions, sir."
 

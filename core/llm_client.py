@@ -10,6 +10,10 @@ GROQ_MODEL   = "qwen/qwen3-32b"
 OLLAMA_MODEL = "llama3.2:3b"
 OLLAMA_URL   = "http://localhost:11434/v1"
 
+FAST_MODEL  = "llama-3.1-8b-instant"
+SMART_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_MODEL = FAST_MODEL
+
 DEFAULT_MODEL = GROQ_MODEL if BACKEND == "groq" else OLLAMA_MODEL
 
 
@@ -39,17 +43,22 @@ def groq_chat_response(
 ):
     import time
     client = _get_client()
+
     params = dict(
         model=model,
         messages=messages,
         temperature=0.6,
-        max_tokens=512,
+        max_tokens=kwargs.get("max_tokens", 512),
     )
+
+    
+    if "70b" in model or "versatile" in model:
+        params["reasoning_effort"] = "none"
+
     if tools:
         params["tools"] = tools
         params["tool_choice"] = "auto"
         params["parallel_tool_calls"] = False
-        
 
     for attempt in range(3):
         try:
