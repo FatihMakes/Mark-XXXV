@@ -507,87 +507,32 @@ ACTION_MAP = {
 }
 
 def _detect_action(description: str) -> dict:
-    """
-    Gemini ile kullanıcının ne yapmak istediğini anlar.
-    Herhangi bir dilde çalışır.
-    Döner: {"action": str, "value": optional}
-    """
-    from core.llm_client import get_model, groq_chat_response
-    model = get_model("llama-3.3-70b-versatile")
+    from core.llm_client import groq_chat_response
+    import re
 
-    available = ", ".join(sorted(ACTION_MAP.keys())) + ", volume_set, type_text, write_on_screen, reload_n, press_key"
+    available = ", ".join(sorted(ACTION_MAP.keys())) + ", volume_set, type_text, reload_n, press_key"
 
-    prompt = f"""The user wants to control their computer. Detect their intent.
-
-User said (in any language): "{description}"
-
-Available actions: {available}
-
-Return ONLY valid JSON:
-{{"action": "action_name", "value": null_or_value}}
-
-Examples:
-- "turn up the volume" → {{"action": "volume_up", "value": null}}
-- "set volume to 60" → {{"action": "volume_set", "value": 60}}
-- "sesi 80 yap" → {{"action": "volume_set", "value": 80}}
-- "close the app" → {{"action": "close_app", "value": null}}
-- "uygulamayı kapat" → {{"action": "close_app", "value": null}}
-- "type hello world" → {{"action": "type_text", "value": "hello world"}}
-- "write good morning on screen" → {{"action": "write_on_screen", "value": "good morning"}}
-- "reload page 3 times" → {{"action": "reload_n", "value": 3}}
-- "tam ekran yap" → {{"action": "full_screen", "value": null}}
-- "sesi kıs" → {{"action": "volume_down", "value": null}}
-- "sesi aç" → {{"action": "volume_up", "value": null}}
-- "sustur" → {{"action": "mute", "value": null}}
-- "monte le son" → {{"action": "volume_up", "value": null}}
-- "ekranı kapat" → {{"action": "sleep_display", "value": null}}
-- "monitörü kapat" → {{"action": "sleep_display", "value": null}}
-- "turn off screen" → {{"action": "sleep_display", "value": null}}
-- "turn off monitor" → {{"action": "sleep_display", "value": null}}
-- "bilgisayarı yeniden başlat" → {{"action": "restart", "value": null}}
-- "restart the computer" → {{"action": "restart", "value": null}}
-- "bilgisayarı kapat" → {{"action": "shutdown", "value": null}}
-- "shut down" → {{"action": "shutdown", "value": null}}
-- "ekranı kilitle" → {{"action": "lock_screen", "value": null}}
-- "lock the screen" → {{"action": "lock_screen", "value": null}}
-- "küçült" → {{"action": "minimize", "value": null}}
-- "minimize the window" → {{"action": "minimize", "value": null}}
-- "büyüt" → {{"action": "maximize", "value": null}}
-- "parlaklığı artır" → {{"action": "brightness_up", "value": null}}
-- "parlaklığı azalt" → {{"action": "brightness_down", "value": null}}
-- "increase brightness" → {{"action": "brightness_up", "value": null}}
-- "wifi'yi aç" → {{"action": "toggle_wifi", "value": null}}
-- "toggle wifi" → {{"action": "toggle_wifi", "value": null}}
-- "masaüstünü göster" → {{"action": "show_desktop", "value": null}}
-- "show desktop" → {{"action": "show_desktop", "value": null}}
-- "yeni sekme aç" → {{"action": "new_tab", "value": null}}
-- "sekmeyi kapat" → {{"action": "close_tab", "value": null}}
-- "geri git" → {{"action": "go_back", "value": null}}
-- "ileri git" → {{"action": "go_forward", "value": null}}
-- "sayfayı yenile" → {{"action": "refresh_page", "value": null}}
-- "yakınlaştır" → {{"action": "zoom_in", "value": null}}
-- "uzaklaştır" → {{"action": "zoom_out", "value": null}}
-- "kaydet" → {{"action": "save", "value": null}}
-- "geri al" → {{"action": "undo", "value": null}}
-- "screenshot al" → {{"action": "screenshot", "value": null}}
-- "ekran görüntüsü al" → {{"action": "screenshot", "value": null}}
-- "aşağı kaydır" → {{"action": "scroll_down", "value": null}}
-- "yukarı kaydır" → {{"action": "scroll_up", "value": null}}
-- "karanlık mod" → {{"action": "dark_mode", "value": null}}
-- "press f5" → {{"action": "press_key", "value": "f5"}}
-- "enter'a bas" → {{"action": "enter", "value": null}}
-- "escape'e bas" → {{"action": "escape", "value": null}}
-
-IMPORTANT:
-- Always return one of the available actions listed above.
-- If the user's intent is clear but uses different wording, map it to the closest action.
-- Never invent new action names not in the available list.
-- Return ONLY the JSON object, no explanation, no markdown."""
+    prompt = (
+        f'The user wants to control their computer. Their intent: "{description}"\n\n'
+        f"Available actions: {available}\n\n"
+        f"Return ONLY a JSON object, no explanation, no markdown:\n"
+        f'{{"action": "action_name", "value": null_or_value}}\n\n'
+        f"Examples:\n"
+        f'- "lower brightness" → {{"action": "brightness_down", "value": null}}\n'
+        f'- "set volume to 60" → {{"action": "volume_set", "value": 60}}\n'
+        f'- "type hello world" → {{"action": "type_text", "value": "hello world"}}\n'
+        f'- "press f5" → {{"action": "press_key", "value": "f5"}}\n'
+        f'- "adjust brightness" → {{"action": "brightness_down", "value": null}}\n'
+    )
 
     try:
-        response = model.generate_content(prompt)
-        text = response.text.strip()
-        text = __import__("re").sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
+        response = groq_chat_response(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.1-8b-instant",
+            max_tokens=64,
+        )
+        text = response.choices[0].message.content.strip()
+        text = re.sub(r"```(?:json)?|```", "", text).strip()
         return json.loads(text)
     except Exception as e:
         print(f"[Settings] ⚠️ Intent detection failed: {e}")
@@ -668,6 +613,15 @@ def computer_settings(
             return f"Scroll failed: {e}"
 
     func = ACTION_MAP.get(action)
+    if not func:
+        # action inválido — intentar detectar intent con el LLM
+        print(f"[Settings] ⚠️ '{action}' not in ACTION_MAP, running detection...")
+        detected = _detect_action(raw_action or description or action)
+        action   = detected.get("action", "").lower().replace(" ", "_")
+        if value is None:
+            value = detected.get("value")
+        func = ACTION_MAP.get(action)
+
     if not func:
         return f"Unknown action: '{raw_action}', sir."
 

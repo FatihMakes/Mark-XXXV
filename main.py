@@ -349,22 +349,48 @@ def _groq_tools() -> list:
                 "required": ["text"]
             }
         },
-        {
-            "name": "computer_settings",
-            "description": (
-                "Controls the computer: volume, brightness, window management, keyboard shortcuts, "
-                "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action":      {"type": "string", "description": "The action to perform"},
-                    "description": {"type": "string", "description": "Natural language description of what to do"},
-                    "value":       {"type": "string", "description": "Optional value: volume level, text to type, etc."}
-                },
-                "required": []
+        
+    {
+    "name": "computer_settings",
+    "description": (
+        "Controls the computer: volume, brightness, window management, "
+        "keyboard shortcuts, typing text, fullscreen, dark mode, WiFi, restart, shutdown."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": (
+                    "Exact action key. Use one of: "
+                    "volume_up | volume_down | volume_set | mute | unmute | "
+                    "brightness_up | brightness_down | "
+                    "fullscreen | minimize | maximize | snap_left | snap_right | "
+                    "show_desktop | switch_window | "
+                    "lock_screen | sleep_display | "
+                    "restart | shutdown | "
+                    "dark_mode | toggle_wifi | "
+                    "close_app | close_window | "
+                    "screenshot | task_manager | "
+                    "scroll_up | scroll_down | scroll_top | scroll_bottom | "
+                    "copy | paste | cut | undo | redo | select_all | save | "
+                    "new_tab | close_tab | next_tab | prev_tab | "
+                    "go_back | go_forward | refresh_page | zoom_in | zoom_out | "
+                    "type_text | press_key | press_enter | press_escape"
+                )
+            },
+            "description": {
+                "type": "string",
+                "description": "Natural language fallback if action key is unclear."
+            },
+            "value": {
+                "type": "string",
+                "description": "For volume_set/brightness: 0-100. For type_text: the text. For press_key: key name."
             }
         },
+        "required": []
+    }
+},
         {
             "name": "browser_control",
             "description": (
@@ -648,7 +674,7 @@ def _play_audio_samples(samples: np.ndarray, samplerate: int):
 from faster_whisper import WhisperModel
 import os
 
-_whisper_model = WhisperModel("small", device="cuda", compute_type="int8")
+_whisper_model = WhisperModel("large-v3-turbo", device="cuda", compute_type="int8")
 
 def _transcribe_audio(pcm_frames: list[np.ndarray]) -> str:
     """
@@ -893,8 +919,10 @@ class JarvisLive:
             elif name == "computer_settings":
                 result = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
 
-            elif name == "close_app":
-                result = await loop.run_in_executor(None, lambda: close_app(parameters=args, player=self.ui))
+            elif name == "computer_settings":
+                if "action" in args:
+                    args["action"] = args["action"].strip().lower().replace(" ", "_")
+                result = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
 
             elif name == "open_app":
                 result = await loop.run_in_executor(None, lambda: open_app(parameters=args, player=self.ui))
@@ -1120,8 +1148,9 @@ class JarvisLive:
                             None
                         )
                         if tool_result and len(tool_result) > 20:
+                            clean_result = self.clean_response(tool_result)
                             self._conversation.append({"role": "assistant", "content": tool_result})
-                            return tool_result
+                            return clean_result
 
                 # Fase 2: modelo inteligente genera respuesta final
                 try:
@@ -1289,15 +1318,6 @@ class JarvisLive:
         self.ui.write_log(f"You: {clean}")
         await self._respond(clean)
 
-    # ── Texto desde UI ────────────────────────────────────────────────────────
-
-        if not self._in_conversation:
-            now = asyncio.get_event_loop().time()
-            if now - self._last_proactive > self._proactive_cooldown:
-                await self._proactive_check()
-
-        self.ui.write_log(f"You: {clean}")
-        await self._respond(clean)
 
     async def _watch_text_queue(self):
         """Procesa comandos de texto escritos desde la UI."""

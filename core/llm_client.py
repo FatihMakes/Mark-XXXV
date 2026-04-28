@@ -52,7 +52,7 @@ def groq_chat_response(
     )
 
     
-    if "70b" in model or "versatile" in model:
+    if "qwen" in model or "deepseek" in model:
         params["reasoning_effort"] = "none"
 
     if tools:
