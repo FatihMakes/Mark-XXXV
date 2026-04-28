@@ -114,78 +114,45 @@ def update_memory(memory_update: dict) -> dict:
     return memory
 
 
-def should_extract_memory(user_text: str, jarvis_text: str, api_key: str) -> bool:
-    """
-    Stage 1: Hızlı YES/NO kontrolü.
-    Öncekinden daha geniş kriterler — favori şeyler, projeler, arkadaşlar da dahil.
-    """
+def should_extract_memory(user_text: str, jarvis_text: str, api_key: str = "") -> bool:
+    keywords = [
+        "me llamo", "mi nombre", "tengo", "años", "vivo", "soy",
+        "me gusta", "odio", "prefiero", "siempre", "nunca",
+        "trabajo", "estudio", "clase", "horario", "proyecto",
+        "quiero", "objetivo", "meta", "amigo", "familia",
+        "i like", "my name", "i live", "i work", "i study",
+    ]
+    text_lower = (user_text + " " + jarvis_text).lower()
+    return any(kw in text_lower for kw in keywords)
+
+
+def extract_memory(user_text: str, jarvis_text: str, api_key: str = "") -> dict:
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash-lite")
+        from openai import OpenAI
+        import re
 
-        # Her iki tarafı da gönder — Jarvis'in söyledikleri de bilgi içerebilir
-        combined = f"User: {user_text[:300]}\nJarvis: {jarvis_text[:200]}"
-
-        check = model.generate_content(
-            f"Does this conversation contain ANY of the following?\n"
-            f"- Personal facts (name, age, city, job, birthday, nationality)\n"
-            f"- Preferences or favorites (food, color, music, sport, game, film, book, etc.)\n"
-            f"- Active projects or goals the user is working on\n"
-            f"- People in the user's life (friends, family, partner, colleagues)\n"
-            f"- Things the user wants to do or buy in the future\n"
-            f"- Any other fact worth remembering long-term\n\n"
-            f"Reply only YES or NO.\n\nConversation:\n{combined}"
-        )
-        return "YES" in check.text.upper()
-    except Exception as e:
-        print(f"[Memory] ⚠️ Stage1 check failed: {e}")
-        return False
-
-
-def extract_memory(user_text: str, jarvis_text: str, api_key: str) -> dict:
-    """
-    Stage 2: Detaylı çıkarım. Her iki tarafı da analiz eder.
-    """
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash-lite")
-
+        client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
         combined = f"User: {user_text[:500]}\nJarvis: {jarvis_text[:300]}"
 
-        raw = model.generate_content(
-            f"Extract ALL memorable personal facts from this conversation. Any language.\n"
-            f"Return ONLY valid JSON. Use {{}} if truly nothing is worth saving.\n\n"
-            f"Category guide:\n"
-            f"  identity      → name, age, birthday, city, country, job, school, nationality, language\n"
-            f"  preferences   → ANY favorite or preferred thing:\n"
-            f"                  favorite_food, favorite_color, favorite_music, favorite_film,\n"
-            f"                  favorite_game, favorite_sport, favorite_book, favorite_artist,\n"
-            f"                  favorite_country, hobbies, interests, dislikes, etc.\n"
-            f"  projects      → projects being built, ongoing work, goals, ideas in progress\n"
-            f"                  (e.g. mark_xxv: 'Building a JARVIS-like AI assistant')\n"
-            f"  relationships → people mentioned: friends, family, partner, colleagues\n"
-            f"                  (e.g. best_friend_ali: 'Best friend, met in university')\n"
-            f"  wishes        → future plans, things to buy, travel plans, dreams\n"
-            f"  notes         → anything else worth remembering (habits, schedule, etc.)\n\n"
-            f"IMPORTANT:\n"
-            f"- Be LIBERAL: if something MIGHT be worth remembering, include it.\n"
-            f"- Extract from BOTH user and Jarvis turns.\n"
-            f"- Skip: weather, reminders, search results, one-time commands.\n"
-            f"- Use concise English values regardless of conversation language.\n\n"
-            f"Format:\n"
-            f'{{"identity":{{"name":{{"value":"Ali"}}}},\n'
-            f' "preferences":{{"favorite_color":{{"value":"blue"}}, "hobby":{{"value":"gaming"}}}},\n'
-            f' "projects":{{"mark_xxv":{{"value":"JARVIS-like AI assistant on Windows"}}}},\n'
-            f' "relationships":{{"friend_yusuf":{{"value":"close friend"}}}},\n'
-            f' "wishes":{{"buy_guitar":{{"value":"wants an acoustic guitar"}}}},\n'
-            f' "notes":{{"works_at_night":{{"value":"usually active late at night"}}}}}}\n\n'
+        prompt = (
+            "Extract memorable personal facts from this conversation. "
+            "Return ONLY valid JSON, no markdown, no explanation. "
+            "Use {} if nothing is worth saving.\n\n"
+            "Categories: identity, preferences, projects, relationships, wishes, notes\n\n"
+            'Format: {"identity":{"name":{"value":"..."}}, "preferences":{"hobby":{"value":"..."}}}\n\n'
             f"Conversation:\n{combined}\n\nJSON:"
-        ).text.strip()
+        )
 
-        import re
+        response = client.chat.completions.create(
+            model="qwen2.5:3b",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=400,
+        )
+
+        raw = response.choices[0].message.content.strip()
         raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
+
         if not raw or raw == "{}":
             return {}
 
@@ -194,8 +161,7 @@ def extract_memory(user_text: str, jarvis_text: str, api_key: str) -> dict:
     except json.JSONDecodeError:
         return {}
     except Exception as e:
-        if "429" not in str(e):
-            print(f"[Memory] ⚠️ Extract failed: {e}")
+        print(f"[Memory] ⚠️ Extract failed: {e}")
         return {}
 
 

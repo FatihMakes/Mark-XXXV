@@ -28,7 +28,7 @@ BASE_DIR           = get_base_dir()
 API_CONFIG_PATH    = BASE_DIR / "config" / "api_keys.json"
 DESKTOP            = Path.home() / "Desktop"
 MAX_BUILD_ATTEMPTS = 3
-GEMINI_MODEL       = "gemini-2.5-flash"
+GEMINI_MODEL       = "llama-3.3-70b-versatile"
 
 
 def _get_api_key() -> str:
@@ -37,9 +37,8 @@ def _get_api_key() -> str:
 
 
 def _get_gemini(model: str = GEMINI_MODEL):
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    return genai.GenerativeModel(model)
+    from core.llm_client import get_model, groq_chat_response
+    return get_model(model)
 
 
 def _clean_code(text: str) -> str:
@@ -455,13 +454,7 @@ def _screen_debug_action(description, file_path, player, speak=None) -> str:
             print(f"[Code] ⚠️ Could not read file: {err}")
 
     try:
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(api_key=_get_api_key())
-
-        image_bytes  = screenshot_path.read_bytes()
-        image_base64 = _image_to_base64(screenshot_path)
+        from core.llm_client import groq_chat_response
 
         user_question = description or "What error or problem do you see on the screen? How can it be fixed?"
 
@@ -469,28 +462,21 @@ def _screen_debug_action(description, file_path, player, speak=None) -> str:
         if file_content:
             context = f"\n\nAdditionally, here is the related file content:\n```\n{file_content[:4000]}\n```"
 
-        analysis_prompt = f"""You are an expert programmer and debugger analyzing a screenshot.
+        analysis_prompt = f"""You are an expert programmer and debugger.
 
 User's question: {user_question}{context}
 
+Note: image analysis is not available in the current Groq text-only integration. Use the available file context and the user's question to provide the best possible debugging guidance.
+
 Please:
-1. Identify any errors, exceptions, or problems visible on the screen
-2. Explain what is causing the problem in simple terms
-3. Provide a concrete fix or solution
-4. If there's code visible, show the corrected version
+1. Identify any likely errors or problems.
+2. Explain what is causing them in simple terms.
+3. Provide a concrete fix or solution.
+4. If there's code visible, show the corrected version.
 
 Be specific and actionable. If you see an error message, quote it exactly."""
 
-        contents = [
-            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-            analysis_prompt,
-        ]
-
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=contents,
-        )
-
+        response = groq_chat_response(prompt=analysis_prompt)
         analysis = response.text.strip()
         print(f"[Code] ✅ Screen analysis complete")
 
@@ -500,11 +486,10 @@ Be specific and actionable. If you see an error message, quote it exactly."""
             pass
 
         if file_path and file_content:
-
             code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", analysis, re.DOTALL)
             if code_match:
                 fixed_code = code_match.group(1).strip()
-                save_path  = Path(file_path)
+                save_path = Path(file_path)
                 _save_file(save_path, fixed_code)
                 analysis += f"\n\n✅ Fixed code has been saved to: {file_path}"
                 print(f"[Code] ✅ Fixed code saved: {file_path}")
@@ -512,7 +497,6 @@ Be specific and actionable. If you see an error message, quote it exactly."""
         return analysis
 
     except Exception as e:
-
         try:
             screenshot_path.unlink()
         except Exception:

@@ -104,9 +104,8 @@ def _is_safe(command: str) -> tuple[bool, str]:
 
 def _ask_gemini(task: str) -> str:
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=_get_api_key())
-        model = genai.GenerativeModel("gemini-2.5-flash-lite")
+        from core.llm_client import get_model, groq_chat_response
+        model = get_model("llama-3.3-70b-versatile")
 
         prompt = (
             f"Convert this request to a single Windows CMD command.\n"

@@ -1,7 +1,5 @@
 sounddevice
-google-genai
-google-generativeai
-pillow
+groq
 requests
 beautifulsoup4
 duckduckgo-search
@@ -20,3 +18,5 @@ win10toast
 send2trash
 youtube-transcript-api
 pywinauto
+openai
+faster-whisper

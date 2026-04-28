@@ -332,49 +332,21 @@ def _smart_type(text: str, clear_first: bool = True) -> str:
 
 def _analyze_screen_for_element(description: str) -> tuple[int, int] | None:
     """
-    Takes a screenshot and asks Gemini to find the coordinates
+    Takes a screenshot and asks Groq to find the coordinates
     of a described element on screen. Returns (x, y) or None.
     """
     try:
-        import google.generativeai as genai
-        import io
-
-        cfg_path = API_CONFIG_PATH
-        with open(cfg_path, "r") as f:
-            api_key = json.load(f)["gemini_api_key"]
-
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash-lite")
-
+        from core.llm_client import groq_chat_response
 
         _ensure_pyautogui()
-        w, h  = pyautogui.size()
-        img   = pyautogui.screenshot()
-        buf   = io.BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-
+        w, h = pyautogui.size()
         prompt = (
-            f"This is a screenshot of a computer screen ({w}x{h} pixels). "
-            f"Find the element: '{description}'. "
-            f"Return ONLY: x,y (the center coordinates of the element). "
-            f"If not found, return: NOT_FOUND"
+            f"This feature is not available for text-only Groq mode. "
+            f"A screenshot of a computer screen ({w}x{h} pixels) has been captured, "
+            f"but exact coordinates cannot be determined without vision support."
         )
-
-        response = model.generate_content([
-            {"mime_type": "image/png", "data": buf.getvalue()},
-            prompt
-        ])
-
-        text = response.text.strip()
-        if "NOT_FOUND" in text:
-            return None
-
-        import re
-        match = re.search(r"(\d+)\s*,\s*(\d+)", text)
-        if match:
-            return int(match.group(1)), int(match.group(2))
-
+        response = groq_chat_response(prompt=prompt)
+        print(f"[ComputerControl] ⚠️ Vision fallback: {response.text.strip()}")
     except Exception as e:
         print(f"[ComputerControl] ⚠️ Screen analysis failed: {e}")
 

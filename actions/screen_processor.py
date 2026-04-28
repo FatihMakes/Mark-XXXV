@@ -20,8 +20,7 @@ try:
 except ImportError:
     _PIL_OK = False
 
-from google import genai
-from google.genai import types
+from core.llm_client import groq_chat_response
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -148,148 +147,34 @@ def _capture_camera() -> bytes:
 class _LiveSession:
 
     def __init__(self):
-        self._loop:      asyncio.AbstractEventLoop | None = None
-        self._thread:    threading.Thread | None          = None
-        self._session                                     = None
-        self._out_queue: asyncio.Queue | None             = None
-        self._audio_in:  asyncio.Queue | None             = None
-        self._ready:     threading.Event                  = threading.Event()
-        self._player                                      = None
-        self._send_lock: asyncio.Lock | None              = None
+        self._player = None
+        self._ready = threading.Event()
 
     def start(self, player=None):
-        if self._thread and self._thread.is_alive():
-            return
         self._player = player
-        self._thread = threading.Thread(
-            target=self._run_loop, daemon=True, name="VisionSessionThread"
-        )
-        self._thread.start()
-        ok = self._ready.wait(timeout=20)
-        if not ok:
-            raise RuntimeError("Vision session did not start within 20s.")
-        print("[ScreenProcess] ✅ Vision session ready (no mic)")
-
-    def _run_loop(self):
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._main())
-
-    async def _main(self):
-        self._out_queue = asyncio.Queue(maxsize=30)
-        self._audio_in  = asyncio.Queue()
-        self._send_lock = asyncio.Lock()
-
-        client = genai.Client(
-            api_key=_get_api_key(),
-            http_options={"api_version": "v1beta"}
-        )
-
-        config = types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            output_audio_transcription={},
-            system_instruction=SYSTEM_PROMPT,
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Charon"
-                    )
-                )
-            ),
-        )
-
-        while True:
-            try:
-                print("[ScreenProcess] 🔌 Vision session connecting...")
-                async with client.aio.live.connect(model=LIVE_MODEL, config=config) as session:
-                    self._session = session
-                    self._ready.set()
-                    print("[ScreenProcess] ✅ Vision session connected")
-                    async with asyncio.TaskGroup() as tg:
-                        tg.create_task(self._send_loop())
-                        tg.create_task(self._recv_loop())
-                        tg.create_task(self._play_loop())
-            except Exception as e:
-                print(f"[ScreenProcess] ⚠️ Disconnected: {e} — reconnecting...")
-                self._session = None
-                self._ready.clear()
-                await asyncio.sleep(2)
-                self._ready.set()
-
-    async def _send_loop(self):
-        while True:
-            item = await self._out_queue.get()
-            if self._session:
-                image_bytes, mime_type, user_text = item
-                try:
-                    b64 = base64.b64encode(image_bytes).decode("utf-8")
-                    await self._session.send_client_content(
-                        turns={
-                            "parts": [
-                                {"inline_data": {"mime_type": mime_type, "data": b64}},
-                                {"text": user_text}
-                            ]
-                        },
-                        turn_complete=True
-                    )
-                    print("[ScreenProcess] ✅ Image sent")
-                except Exception as e:
-                    print(f"[ScreenProcess] ⚠️ Send error: {e}")
-
-    async def _recv_loop(self):
-        transcript_buf: list[str] = []
-        try:
-            async for response in self._session.receive():
-                if response.data:
-                    await self._audio_in.put(response.data)
-                sc = response.server_content
-                if not sc:
-                    continue
-                if sc.output_transcription and sc.output_transcription.text:
-                    chunk = sc.output_transcription.text.strip()
-                    if chunk:
-                        transcript_buf.append(chunk)
-                if sc.turn_complete:
-                    if transcript_buf and self._player:
-                        full = re.sub(r'\s+', ' ', " ".join(transcript_buf)).strip()
-                        if full:
-                            self._player.write_log(f"Jarvis: {full}")
-                            print(f"[ScreenProcess] 💬 {full}")
-                    transcript_buf = []
-        except Exception as e:
-            print(f"[ScreenProcess] ⚠️ Recv error: {e}")
-            transcript_buf = []
-            await asyncio.sleep(0.3)
-
-    async def _play_loop(self):
-        stream = sd.RawOutputStream(
-            samplerate=RECEIVE_SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=CHUNK_SIZE,
-        )
-        stream.start()
-        try:
-            while True:
-                chunk = await self._audio_in.get()
-                await asyncio.to_thread(stream.write, chunk)
-        except Exception as e:
-            print(f"[ScreenProcess] ❌ Play error: {e}")
-            raise
-        finally:
-            stream.stop()
-            stream.close()
+        self._ready.set()
+        print("[ScreenProcess] ✅ Screen processor ready (text-only Groq fallback)")
 
     def analyze(self, image_bytes: bytes, mime_type: str, user_text: str):
-        if not self._loop:
-            return
-        asyncio.run_coroutine_threadsafe(
-            self._out_queue.put((image_bytes, mime_type, user_text)),
-            self._loop
-        )
+        def worker():
+            try:
+                prompt = (
+                    "A screenshot has been captured, but image analysis is not available "
+                    "in the current Groq text-only integration. "
+                    f"User asked: {user_text}"
+                )
+                response = groq_chat_response(prompt=prompt)
+                summary = response.text.strip()
+                if self._player:
+                    self._player.write_log(f"ScreenAnalysis: {summary}")
+                print(f"[ScreenProcess] 🧠 {summary}")
+            except Exception as e:
+                print(f"[ScreenProcess] ⚠️ Screen analysis failed: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def is_ready(self) -> bool:
-        return self._session is not None
+        return True
 
 
 _live       = _LiveSession()

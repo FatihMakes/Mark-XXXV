@@ -107,6 +107,19 @@ class JarvisUI:
         self.log_text.tag_config("sys", foreground=C_ACC2)
         self.log_text.tag_config("err", foreground=C_RED)
 
+        # botón selector de mic — esquina inferior izquierda, encima del mute
+        self._mic_btn = tk.Button(
+        self.root,
+        text="🎙 MIC",
+        command=self.show_mic_selector,
+        fg=C_MID, bg=C_PANEL,
+        font=("Courier", 8),
+        borderwidth=0, cursor="hand2",
+        highlightthickness=1,
+        highlightbackground=C_DIM,
+    )
+        self._mic_btn.place(x=18, y=self.H - 100, width=110, height=24)
+
         # ── Klavye girişi ─────────────────────────────────────────────────────
         INPUT_Y = LOG_Y + LH + 6
         self._build_input_bar(LW, INPUT_Y)
@@ -124,8 +137,101 @@ class JarvisUI:
 
         self._animate()
         self.root.protocol("WM_DELETE_WINDOW", lambda: os._exit(0))
+        self.overlay = JarvisOverlay(self.root)
 
     # ── Mute butonu ───────────────────────────────────────────────────────────
+
+    def show_mic_selector(self):
+        import sounddevice as sd
+        import json
+
+        devices = sd.query_devices()
+        input_devs = [
+            (i, d["name"]) for i, d in enumerate(devices)
+            if d["max_input_channels"] > 0
+            and "mapper" not in d["name"].lower()
+            and "primary" not in d["name"].lower()
+            and "droidcam" not in d["name"].lower()
+        ]
+
+        win = tk.Toplevel(self.root)
+        win.title("Seleccionar micrófono")
+        win.configure(bg="#000d12")
+        win.resizable(False, False)
+        win.geometry("400x300")
+        win.attributes("-topmost", True)
+
+        tk.Label(win, text="SELECCIONAR MICRÓFONO",
+                 fg="#00d4ff", bg="#000d12",
+                font=("Courier", 11, "bold")).pack(pady=(16, 8))
+
+        var = tk.IntVar(value=1)
+
+    # cargar selección actual
+        try:
+            cfg = json.loads(API_FILE.read_text(encoding="utf-8"))
+            var.set(cfg.get("mic_device", 1))
+        except Exception:
+            pass
+
+        frame = tk.Frame(win, bg="#000d12")
+        frame.pack(fill="both", expand=True, padx=16)
+
+        for idx, name in input_devs:
+            tk.Radiobutton(
+                frame,
+                text=f"{idx} — {name[:45]}",
+                variable=var, value=idx,
+                fg="#8ffcff", bg="#000d12",
+                selectcolor="#003344",
+                activebackground="#000d12",
+                activeforeground="#00d4ff",
+                font=("Courier", 9),
+                anchor="w",
+            ).pack(fill="x", pady=2)
+
+        def _save():
+            try:
+                cfg = {}
+                if API_FILE.exists():
+                    cfg = json.loads(API_FILE.read_text(encoding="utf-8"))
+                    cfg["mic_device"] = var.get()
+                    API_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+                    self.write_log(f"SYS: Micrófono guardado (device {var.get()}). Reiniciá para aplicar.")
+            except Exception as e:
+                self.write_log(f"ERR: No se pudo guardar: {e}")
+                win.destroy()
+
+            tk.Button(
+            win, text="✓ GUARDAR",
+            command=_save,
+            fg="#000000", bg="#00d4ff",
+            font=("Courier", 10, "bold"),
+            borderwidth=0, pady=6, cursor="hand2",
+        ).pack(pady=12)
+
+    def show_screenshot_button(self, path: str):
+        """Muestra un botón temporal que abre la carpeta de la captura."""
+        import subprocess
+
+        BTN_W, BTN_H = 180, 26
+        x = (self.W - BTN_W) // 2
+        y = self.H - 120  # encima del input
+
+        btn = tk.Button(
+            self.root,
+            text="📂 Abrir carpeta",
+            command=lambda: subprocess.Popen(f'explorer /select,"{path}"'),
+            fg="#00d4ff", bg="#000d12",
+            activeforeground="#000000", activebackground="#00d4ff",
+            font=("Courier", 9, "bold"),
+            borderwidth=0, cursor="hand2",
+            highlightthickness=1,
+            highlightbackground="#007a99",
+        )
+        btn.place(x=x, y=y, width=BTN_W, height=BTN_H)
+        # desaparece solo a los 8 segundos
+        self.root.after(8000, btn.destroy)
 
     def _build_mute_button(self):
         """Sol alt köşeye mute butonu yerleştirir."""
@@ -517,10 +623,15 @@ class JarvisUI:
     def write_log(self, text: str):
         self.typing_queue.append(text)
         tl = text.lower()
+
+    # Overlay
         if tl.startswith("you:"):
+            self.overlay.show_you(text[4:].strip())
             self.set_state("PROCESSING")
         elif tl.startswith("jarvis:") or tl.startswith("ai:"):
+            self.overlay.show_ai(text[text.index(":")+1:].strip())
             self.set_state("SPEAKING")
+
         if not self.is_typing:
             self._start_typing()
 
@@ -611,3 +722,135 @@ class JarvisUI:
         self._api_key_ready = True
         self.set_state("LISTENING")
         self.write_log("SYS: Systems initialised. JARVIS online.")
+
+# ── Overlay — agregar al final de jarvis_ui.py ────────────────────────────────
+
+class JarvisOverlay:
+    """
+    Burbuja flotante pequeña, esquina inferior derecha.
+    No roba foco, no interfiere con lo que el usuario esté haciendo.
+    """
+
+    W_OVERLAY  = 320
+    PAD        = 12
+    AUTO_HIDE  = 5000   # ms antes de ocultarse solo
+
+    def __init__(self, root: tk.Tk):
+        self._root     = root
+        self._win      = None
+        self._hide_job = None
+        self._visible  = False
+        self._create()
+
+    def _create(self):
+        self._win = tk.Toplevel(self._root)
+        self._win.overrideredirect(True)          # sin bordes
+        self._win.attributes("-topmost", True)    # siempre encima
+        self._win.attributes("-alpha", 0.0)       # empieza invisible
+        self._win.configure(bg="#000d12")
+
+        # borde exterior
+        self._frame = tk.Frame(
+            self._win, bg="#000d12",
+            highlightbackground="#00d4ff",
+            highlightthickness=1,
+        )
+        self._frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # header pequeño
+        self._header = tk.Label(
+            self._frame,
+            text="J.A.R.V.I.S",
+            fg="#007a99", bg="#000d12",
+            font=("Courier", 7, "bold"),
+            anchor="w", padx=self.PAD,
+        )
+        self._header.pack(fill="x", pady=(6, 0))
+
+        # texto usuario
+        self._lbl_you = tk.Label(
+            self._frame,
+            text="",
+            fg="#e8e8e8", bg="#000d12",
+            font=("Courier", 9),
+            wraplength=self.W_OVERLAY - self.PAD * 2,
+            justify="left", anchor="w",
+            padx=self.PAD,
+        )
+        self._lbl_you.pack(fill="x", pady=(2, 0))
+
+        # separador
+        self._sep = tk.Frame(self._frame, bg="#003344", height=1)
+        self._sep.pack(fill="x", padx=self.PAD, pady=4)
+
+        # texto jarvis
+        self._lbl_ai = tk.Label(
+            self._frame,
+            text="",
+            fg="#00d4ff", bg="#000d12",
+            font=("Courier", 9),
+            wraplength=self.W_OVERLAY - self.PAD * 2,
+            justify="left", anchor="w",
+            padx=self.PAD,
+        )
+        self._lbl_ai.pack(fill="x", pady=(0, self.PAD))
+
+        self._position()
+        self._win.withdraw()  # oculto al inicio
+
+    def _position(self):
+        sw = self._root.winfo_screenwidth()
+        sh = self._root.winfo_screenheight()
+        self._win.update_idletasks()
+        h = self._win.winfo_reqheight()
+        x = sw - self.W_OVERLAY - 16
+        y = sh - h - 48           # encima de la barra de tareas
+        self._win.geometry(f"{self.W_OVERLAY}x{h}+{x}+{y}")
+
+    def _fade_in(self, alpha=0.0):
+        if alpha >= 0.92:
+            self._win.attributes("-alpha", 0.92)
+            return
+        self._win.attributes("-alpha", alpha)
+        self._root.after(16, self._fade_in, alpha + 0.08)
+
+    def _fade_out(self, alpha=0.92):
+        if alpha <= 0.0:
+            self._win.attributes("-alpha", 0.0)
+            self._win.withdraw()
+            self._visible = False
+            return
+        self._win.attributes("-alpha", alpha)
+        self._root.after(20, self._fade_out, alpha - 0.07)
+
+    def _schedule_hide(self):
+        if self._hide_job:
+            self._root.after_cancel(self._hide_job)
+        self._hide_job = self._root.after(self.AUTO_HIDE, self._fade_out)
+
+    def show_you(self, text: str):
+        """Llamar cuando el usuario habla."""
+        self._lbl_you.config(text=f"Vos: {text}")
+        self._lbl_ai.config(text="")
+        self._sep.config(bg="#003344")
+        self._show()
+
+    def show_ai(self, text: str):
+        """Llamar cuando Jarvis responde."""
+        self._lbl_ai.config(text=f"Jarvis: {text}")
+        self._sep.config(bg="#00d4ff")
+        self._show()
+        self._schedule_hide()
+
+    def _show(self):
+        if self._hide_job:
+            self._root.after_cancel(self._hide_job)
+            self._hide_job = None
+        if not self._visible:
+            self._win.deiconify()
+            self._visible = True
+            self._fade_in()
+        self._position()   # re-posicionar por si el texto cambió el alto
+
+    def hide(self):
+        self._fade_out()

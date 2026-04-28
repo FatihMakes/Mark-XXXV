@@ -1,11 +1,13 @@
 # actions/web_search.py
 # MARK XXV — Web Search
-# Primary: Gemini google_search (yeni google.genai SDK)
+# Primary: Groq chat completions for query understanding
 # Fallback: DuckDuckGo (ddgs)
 
 import json
 import sys
 from pathlib import Path
+from core.llm_client import groq_chat_response
+import ddgs
 
 
 def get_base_dir() -> Path:
@@ -16,29 +18,61 @@ def get_base_dir() -> Path:
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
-def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
 
+#def _get_api_key() -> str:
+  #  with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+   #     return json.load(f)["gemini_api_key"]
 
-def _gemini_search(query: str) -> str:
-    from google import genai
-
-    client = genai.Client(api_key=_get_api_key())
-    response = client.models.generate_content(
-        model="gemini-2.5-flash-lite",
-        contents=query,
-        config={"tools": [{"google_search": {}}]}
+def _groq_search(query: str) -> str:
+    response = groq_chat_response(
+        messages=[{
+            "role": "user",
+            "content": f"Search the web for the following query and provide a concise, accurate answer: {query}"
+        }],
+        temperature=0.4,
+        max_tokens=80,
     )
-    text = ""
-    for part in response.candidates[0].content.parts:
-        if hasattr(part, "text") and part.text:
-            text += part.text
-    if not text.strip():
+    text = response.choices[0].message.content.strip()
+    if not text:
         raise ValueError("Empty response")
-    return text.strip()
+    return text
 
+def _ddg_then_summarize(query: str) -> str:
+    results = _ddg_search(query, max_results=6)
+    if not results:
+        return f"No encontré información sobre: {query}"
+    
+    context = "\n".join([
+        f"- {r['title']}: {r['snippet']}" 
+        for r in results if r.get("snippet")
+    ])
 
+    if not context:
+        return f"No encontré snippets útiles para: {query}"
+
+    try:
+        response = groq_chat_response(
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Search results for '{query}':\n\n"
+                    f"{context}\n\n"
+                    f"Extract the current temperature number from these results. "
+                    f"Reply with ONLY: 'La temperatura actual en [place] es de X°C.' "
+                    f"If no specific number found, reply: 'No se encontró temperatura exacta, pero [brief summary].'"
+                )
+            }],
+            temperature=0.1,
+            max_tokens=80,
+        )
+        result = response.choices[0].message.content.strip()
+        if not result:
+            raise ValueError("Empty response")
+        return result
+    except Exception as e:
+        print(f"[DDG] Summarize failed: {e}")
+        first = results[0]
+        return f"{first['title']}: {first['snippet'][:200]}"
 
 def _ddg_search(query: str, max_results: int = 6) -> list:
     try:
@@ -70,9 +104,9 @@ def _format_ddg(query: str, results: list) -> str:
 def _compare(items: list, aspect: str) -> str:
     query = f"Compare {', '.join(items)} in terms of {aspect}. Give specific facts and data."
     try:
-        return _gemini_search(query)
+        return _groq_search(query)
     except Exception as e:
-        print(f"[WebSearch] ⚠️ Gemini compare failed: {e}")
+        print(f"[WebSearch] ⚠️ Groq compare failed: {e}")
         all_results = {}
         for item in items:
             try:
@@ -112,24 +146,25 @@ def web_search(
     print(f"[WebSearch] 🔍 Query: {query!r}  Mode: {mode}")
 
     try:
-        if mode == "compare" and items:
-            print(f"[WebSearch] 📊 Comparing: {items}")
-            result = _compare(items, aspect)
-            print("[WebSearch] ✅ Compare done.")
-            return result
+        print("[WebSearch] 🌐 Searching...")
+        
+        # clima y datos en tiempo real → DDG directo (Groq no tiene datos actuales)
+        realtime_keywords = ["clima", "weather", "temperatura", "lluvia", "pronóstico", "forecast"]
+        if any(w in query.lower() for w in realtime_keywords):
+            print("[WebSearch] 🌦️ Realtime query → DDG + summarize")
+            return _ddg_then_summarize(query)
 
-        print("[WebSearch] 🌐 Gemini search...")
+        # resto → Groq primero, DDG como fallback
         try:
-            result = _gemini_search(query)
-            print("[WebSearch] ✅ Gemini OK.")
+            result = _groq_search(query)
+            print("[WebSearch] ✅ Groq OK.")
             return result
         except Exception as e:
-            print(f"[WebSearch] ⚠️ Gemini failed ({e}), trying DDG...")
+            print(f"[WebSearch] ⚠️ Groq failed ({e}), trying DDG...")
             results = _ddg_search(query)
             result  = _format_ddg(query, results)
             print(f"[WebSearch] ✅ DDG: {len(results)} results.")
             return result
-
     except Exception as e:
         print(f"[WebSearch] ❌ Failed: {e}")
         return f"Search failed, sir: {e}"

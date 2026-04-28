@@ -71,9 +71,8 @@ def _parse_date(raw: str) -> str:
             return val.strftime("%Y-%m-%d")
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=_get_api_key())
-        model    = genai.GenerativeModel("gemini-2.5-flash-lite")
+        from core.llm_client import get_model, groq_chat_response
+        model = get_model("llama-3.3-70b-versatile")
         today_str = today.strftime("%Y-%m-%d")
         response = model.generate_content(
             f"Today is {today_str}. Convert this date to YYYY-MM-DD format: '{raw}'. "
@@ -181,11 +180,10 @@ def _parse_flights_with_gemini(
     Sends raw page text to Gemini and extracts structured flight data.
     Returns list of flight dicts.
     """
-    import google.generativeai as genai
+    from core.llm_client import get_model, groq_chat_response
 
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+    model = get_model(
+        model_name="llama-3.3-70b-versatile",
         system_instruction=(
             "You are a flight data extraction expert. "
             "Extract flight information from raw webpage text. "

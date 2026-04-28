@@ -370,6 +370,7 @@ def _search_steam_appid(game_name: str) -> tuple[str | None, str | None]:
             print(f"[GameUpdater] 📖 Known partial: {canonical} ({app_id})")
             return app_id, canonical
 
+
     try:
         import urllib.request, urllib.parse
         query = urllib.parse.quote(game_name)
